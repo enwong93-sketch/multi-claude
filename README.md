@@ -10,7 +10,7 @@ Run **several Claude desktop apps side by side on Windows, one account each**, a
 
 | Problem | What this tool does |
 |---|---|
-| The Store app only runs one profile | Starts extra copies with their own `--user-data-dir`, each with its own login. Adds a desktop shortcut and a coloured icon per runtime. |
+| The Store app only runs one profile | Starts extra copies with their own `--user-data-dir`, each with its own login. Adds a desktop shortcut per runtime with the Claude icon plus a coloured letter badge (read from the installed app at run time; nothing is bundled). |
 | The extra runtime cannot sign in (the `claude://` link always opens the primary app) | `multi-claude login` forwards the sign-in link from the browser to the runtime that is waiting for it. |
 | Each runtime only lists its own Code conversations | Mirrors the session index files between all runtimes (newest copy wins, no deletes). |
 | After switching runtime, the model "forgets" the work done in the other one | Ends the stale per-conversation engine process in the other runtimes, so the next message re-reads the shared transcript. |

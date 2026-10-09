@@ -52,7 +52,7 @@ export function cmdShortcuts(args) {
     const idx = allRuntimes(cfg).indexOf(allRuntimes(cfg).find(r => r.name === rt.name));
     const vbs = writeLauncher(cfg, rt);
     const out = psFile('make-shortcut.ps1', ['-Letter', rt.name, '-Color', rt.color || palette[idx] || '#555555', '-Title', `Claude ${rt.name}`,
-      '-Vbs', vbs, '-IconPath', join(cfg.home, rt.name, 'icon.ico'), '-OutDirs', `${desktop},${join(cfg.home, 'Launchers')}`]);
+      '-Vbs', vbs, '-IconPath', join(cfg.home, rt.name, 'icon.ico'), '-OutDirs', `${desktop},${join(cfg.home, 'Launchers')}`, '-BaseExe', findClaudeExe()]);
     console.log(out.trim());
   }
   console.log('Pin them to the taskbar yourself (right-click > Pin to taskbar); Windows does not allow scripting that.');
