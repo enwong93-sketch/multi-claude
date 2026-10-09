@@ -1,5 +1,5 @@
 {
-  "name": "claude-desktop-multi-runtime",
+  "name": "multi-claude",
   "version": "0.1.0",
   "description": "Run several Claude desktop instances (one account each) on Windows and keep their Claude Code session lists and conversation context in sync.",
   "type": "module",

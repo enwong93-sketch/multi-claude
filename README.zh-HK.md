@@ -1,4 +1,4 @@
-# claude-desktop-multi-runtime（繁體中文／廣東話說明）
+# Multi Claude（繁體中文／廣東話說明）
 
 喺 Windows 同時開多個 Claude 桌面 App（每個一個帳戶），並且同步 **Claude Code 對話清單同上下文**，令你可以喺任何一個帳戶繼續同一個對話。
 
@@ -14,8 +14,8 @@
 ## 快速開始
 
 ```powershell
-git clone https://github.com/enwong93-sketch/claude-desktop-multi-runtime
-cd claude-desktop-multi-runtime
+git clone https://github.com/enwong93-sketch/multi-claude
+cd multi-claude
 $env:CCM_HOME = 'D:\ClaudeRuntimes'   # 選用：避免佔用 C 碟
 node bin/ccm.mjs init
 node bin/ccm.mjs add B

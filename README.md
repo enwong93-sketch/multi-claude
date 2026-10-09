@@ -1,4 +1,4 @@
-# claude-desktop-multi-runtime
+# Multi Claude
 
 Run **several Claude desktop apps side by side on Windows, one account each**, and keep their **Claude Code session lists and conversation context in sync**, so you can continue the same conversation from whichever account you are signed in to.
 
@@ -23,8 +23,8 @@ Run **several Claude desktop apps side by side on Windows, one account each**, a
 ## Quick start
 
 ```powershell
-git clone https://github.com/enwong93-sketch/claude-desktop-multi-runtime
-cd claude-desktop-multi-runtime
+git clone https://github.com/enwong93-sketch/multi-claude
+cd multi-claude
 # optional: keep everything off the system drive
 $env:CCM_HOME = 'D:\ClaudeRuntimes'      # default: %USERPROFILE%\ClaudeRuntimes
 
