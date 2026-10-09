@@ -10,9 +10,9 @@ export const DEFAULTS = Object.freeze({
 });
 
 export function homeDir(env = process.env) {
-  return resolve(env.CCM_HOME || join(env.USERPROFILE || env.HOME || '.', 'ClaudeRuntimes'));
+  return resolve(env.MULTI_CLAUDE_HOME || join(env.USERPROFILE || env.HOME || '.', 'MultiClaude'));
 }
-export const configPath = home => join(home, 'ccm.json');
+export const configPath = home => join(home, 'multi-claude.json');
 
 export function defaultPrimaryUserData(env = process.env) {
   return join(env.APPDATA || join(env.USERPROFILE || '.', 'AppData', 'Roaming'), 'Claude');

@@ -8,7 +8,7 @@ import { DEFAULTS } from '../src/config.mjs';
 
 const CLI = '6530f31e-d4f4-484a-9374-b4f940e52948';
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'ccm-'));
+  const root = mkdtempSync(join(tmpdir(), 'multi-claude-'));
   const mk = (rt, acct) => { const d = join(root, rt, 'claude-code-sessions', acct, 'org1'); mkdirSync(d, { recursive: true }); return d; };
   const dirs = { A: mk('A', 'acctA'), B: mk('B', 'acctB'), C: mk('C', 'acctC') };
   const cfg = { home: root, ...DEFAULTS, primary: { name: 'A', userData: join(root, 'A') }, runtimes: [{ name: 'B', profile: join(root, 'B') }, { name: 'C', profile: join(root, 'C') }] };

@@ -8,7 +8,7 @@ import { listClaudeProcesses, runtimeOf, isMainProcess, endResumeProcesses, extr
 import { createSync, runWatch, discoverSides, fileLogger } from './sync.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CCM = join(ROOT, 'bin', 'ccm.mjs');
+const ENTRY = join(ROOT, 'bin', 'multi-claude.mjs');
 const psFile = (script, args) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'scripts', script), ...args], { encoding: 'utf8', windowsHide: true });
 
 export function findClaudeExe() {
@@ -19,7 +19,7 @@ export function findClaudeExe() {
   return exe;
 }
 
-const need = cfg => { if (!existsSync(configPath(cfg.home))) throw new Error(`No configuration yet. Run: ccm init`); };
+const need = cfg => { if (!existsSync(configPath(cfg.home))) throw new Error(`No configuration yet. Run: multi-claude init`); };
 const logOf = cfg => fileLogger(join(cfg.home, 'sync.log'));
 const runtimeByName = (cfg, name) => {
   const rt = allRuntimes(cfg).find(r => r.name.toLowerCase() === String(name).toLowerCase());
@@ -32,14 +32,14 @@ export function cmdInit(args) {
   if (args['primary-name']) { validateName(args['primary-name']); cfg.primary.name = args['primary-name']; }
   if (args['primary-data']) cfg.primary.userData = resolve(args['primary-data']);
   saveConfig(cfg);
-  console.log(`Home: ${home}\nConfig: ${configPath(home)}\nPrimary runtime "${cfg.primary.name}" -> ${cfg.primary.userData}\nNext: ccm add <name>`);
+  console.log(`Home: ${home}\nConfig: ${configPath(home)}\nPrimary runtime "${cfg.primary.name}" -> ${cfg.primary.userData}\nNext: multi-claude add <name>`);
 }
 
 export function writeLauncher(cfg, rt) {
   const dir = join(cfg.home, rt.name); mkdirSync(dir, { recursive: true });
   const vbs = join(dir, 'launch.vbs');
   const q = s => `"""${s}"""`;
-  writeFileSync(vbs, `Option Explicit\r\nCreateObject("WScript.Shell").Run ${q(process.execPath)} & " " & ${q(CCM)} & " launch ${rt.name}", 0, False\r\n`);
+  writeFileSync(vbs, `Option Explicit\r\nCreateObject("WScript.Shell").Run ${q(process.execPath)} & " " & ${q(ENTRY)} & " launch ${rt.name}", 0, False\r\n`);
   return vbs;
 }
 
@@ -59,14 +59,14 @@ export function cmdShortcuts(args) {
 }
 
 export function cmdAdd(args) {
-  const name = args._[0]; if (!name) throw new Error('Usage: ccm add <name> [--profile <folder>] [--no-shortcuts]');
+  const name = args._[0]; if (!name) throw new Error('Usage: multi-claude add <name> [--profile <folder>] [--no-shortcuts]');
   const cfg = loadConfig(); need(cfg);
   const rt = addRuntime(cfg, name, args.profile);
   mkdirSync(rt.profile, { recursive: true });
   saveConfig(cfg);
   console.log(`Added runtime "${rt.name}" with profile ${rt.profile}`);
   if (!args['no-shortcuts']) cmdShortcuts({ _: [rt.name] });
-  console.log(`Next: ccm login ${rt.name}   (opens the runtime and helps the sign-in link reach it)`);
+  console.log(`Next: multi-claude login ${rt.name}   (opens the runtime and helps the sign-in link reach it)`);
 }
 
 export function cmdRemove(args) {
@@ -94,7 +94,7 @@ function watcherAlive(cfg) {
 }
 export function ensureWatcher(cfg) {
   if (watcherAlive(cfg)) return false;
-  spawn(process.execPath, [CCM, 'sync', '--watch'], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env }).unref();
+  spawn(process.execPath, [ENTRY, 'sync', '--watch'], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env }).unref();
   return true;
 }
 
