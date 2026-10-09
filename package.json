@@ -1,0 +1,12 @@
+{
+  "name": "claude-desktop-multi-runtime",
+  "version": "0.1.0",
+  "description": "Run several Claude desktop instances (one account each) on Windows and keep their Claude Code session lists and conversation context in sync.",
+  "type": "module",
+  "bin": { "ccm": "bin/ccm.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" },
+  "os": ["win32"],
+  "license": "MIT",
+  "keywords": ["claude", "claude-desktop", "claude-code", "multi-account", "windows"]
+}
