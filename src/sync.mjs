@@ -4,7 +4,8 @@
 //   possibly stale, copy whenever a conversation is merely focused, so trusting mtime lets an old record overwrite the newest one everywhere.
 // - a conversation deleted in one runtime is deleted in the others, but only as a move to <home>\sync-trash (never destroyed), and a guard
 //   refuses to propagate when more than 3 files vanish at once
-// - every file that gets overwritten is first copied to <home>\sync-undo (kept 7 days)
+// - every file that gets overwritten is first copied to <home>\sync-undo; undo copies, the trash and the log all have hard size/age limits
+//   (see DEFAULTS in config.mjs), so this tool never grows without bound
 // - ending stale `claude.exe --resume=<id>` engine processes is OPT-IN (`recycle: true`); it used to be on and force-killed engines mid-turn
 import { readdirSync, statSync, copyFileSync, utimesSync, renameSync, existsSync, readFileSync, writeFileSync, unlinkSync, rmSync, watch, appendFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -14,6 +15,31 @@ const FILE = /^local_[0-9a-f-]+\.json$/i;
 const dirsIn = d => { try { return readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => join(d, e.name)); } catch { return []; } };
 const filesIn = d => { try { return readdirSync(d).filter(f => FILE.test(f)); } catch { return []; } };
 const readJson = f => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
+
+/** Delete files under `root` that are older than keepMs, then (optionally) all but the newest `perKey` of each group, then oldest-first until the
+ *  total is under capBytes. Empty folders are removed. Returns the number of files deleted. */
+export function pruneTree(root, { keepMs, capBytes, perKey, keyOf, now = Date.now }) {
+  const files = [];
+  const walk = d => { let es; try { es = readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else { try { const st = statSync(p); files.push({ p, m: st.mtimeMs, size: st.size, key: keyOf ? keyOf(p) : null }); } catch { /* vanished */ } } } };
+  walk(root);
+  const doomed = new Set();
+  if (keepMs != null) for (const f of files) if (now() - f.m > keepMs) doomed.add(f);
+  if (perKey && keyOf) {
+    const groups = new Map();
+    for (const f of files) { if (!groups.has(f.key)) groups.set(f.key, []); groups.get(f.key).push(f); }
+    for (const g of groups.values()) { g.sort((a, b) => b.m - a.m); for (const f of g.slice(perKey)) doomed.add(f); }
+  }
+  if (capBytes != null) {
+    let total = 0; const live = files.filter(f => !doomed.has(f)).sort((a, b) => a.m - b.m);   // oldest first
+    for (const f of live) total += f.size;
+    for (const f of live) { if (total <= capBytes) break; doomed.add(f); total -= f.size; }
+  }
+  for (const f of doomed) { try { unlinkSync(f.p); } catch { /* ignore */ } }
+  const sweep = d => { let es; try { es = readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) if (e.isDirectory()) sweep(join(d, e.name)); try { if (d !== root && readdirSync(d).length === 0) rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } };
+  sweep(root);
+  return doomed.size;
+}
+
 const sleepMs = ms => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 /** Every <userData>\claude-code-sessions\<account>\<org> folder that exists. Use one account per runtime. */
@@ -44,17 +70,23 @@ export function createSync({ cfg, log = () => {}, recycle = () => [], now = Date
   const lastRecycle = new Map();
   const sideKey = s => `${s.runtime}|${s.dir}`;
 
+  let seq = 0;
   function backupUndo(p, side) {
     try {
-      const d = join(UNDO, new Date(now()).toISOString().slice(0, 10), side.runtime);
-      mkdirSync(d, { recursive: true }); copyFileSync(p, join(d, `${basename(p)}.${now()}`));
+      const d = join(UNDO, side.runtime);
+      mkdirSync(d, { recursive: true }); copyFileSync(p, join(d, `${basename(p)}.${now()}-${seq++}`));
     } catch (e) { log(`undo backup ERR: ${e.message}`); }
   }
-  function pruneUndo() {
+  // Housekeeping, at most every cfg.pruneIntervalMs: undo copies (age, newest N per conversation and runtime, total size) and the trash (age, total size).
+  let lastPrune = -Infinity;
+  function housekeeping() {
+    if (now() - lastPrune < (cfg.pruneIntervalMs ?? 600000)) return;
+    lastPrune = now();
     try {
-      const cutoff = now() - 7 * 86400000;
-      for (const day of readdirSync(UNDO)) { const dp = join(UNDO, day); if (statSync(dp).mtimeMs < cutoff) rmSync(dp, { recursive: true, force: true }); }
-    } catch { /* nothing to prune yet */ }
+      const u = pruneTree(UNDO, { keepMs: (cfg.undoKeepDays ?? 1) * 86400000, perKey: cfg.undoKeepPerFile ?? 3, keyOf: p => join(basename(join(p, '..')), basename(p).replace(/\.json\.\d+-\d+$/, '.json')), capBytes: (cfg.undoMaxMB ?? 100) * 1048576, now });
+      const t = pruneTree(TRASH, { keepMs: (cfg.trashKeepDays ?? 14) * 86400000, capBytes: (cfg.trashMaxMB ?? 50) * 1048576, now });
+      if (u || t) log(`housekeeping: removed ${u} undo copies and ${t} trashed files`);
+    } catch (e) { log(`housekeeping ERR: ${e.message}`); }
   }
   function toTrash(p, side, f) {
     const d = join(TRASH, new Date(now()).toISOString().slice(0, 10), side.runtime);
@@ -118,7 +150,7 @@ export function createSync({ cfg, log = () => {}, recycle = () => [], now = Date
   }
 
   function syncOnce() {
-    pruneUndo();
+    housekeeping();
     retryPending();
     const sides = discoverSides(cfg); let n = 0;
     n += propagateDeletes(sides);
@@ -154,7 +186,14 @@ export function runWatch({ cfg, log, recycle, shouldExit }) {
   setInterval(() => { if (!shouldExit()) misses = 0; else if (++misses >= 3) { syncOnce(); log('no extra runtime running; final pass done, exiting'); process.exit(0); } }, cfg.syncIntervalMs);
 }
 
-export function fileLogger(file) {
+/** Append-only log with rotation: when the file passes maxBytes it is renamed to <file>.old (replacing the previous .old), so at most ~2x maxBytes is kept. */
+export function fileLogger(file, maxBytes = 1048576) {
   mkdirSync(join(file, '..'), { recursive: true });
-  return m => { try { appendFileSync(file, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ } };
+  return m => {
+    try {
+      try { if (statSync(file).size > maxBytes) renameSync(file, file + '.old'); } catch { /* no log yet */ }
+      appendFileSync(file, `${new Date().toISOString()} ${m}
+`);
+    } catch { /* ignore */ }
+  };
 }

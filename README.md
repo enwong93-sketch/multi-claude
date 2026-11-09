@@ -4,7 +4,7 @@ Run **several Claude desktop apps side by side on Windows, one account each**, a
 
 > Unofficial. Not affiliated with or endorsed by Anthropic. It relies on undocumented behaviour of the desktop app (file layout, process names) that can change in any release. Use it only with accounts you are entitled to use, and respect Anthropic's terms and usage policies. Read [What it touches](#what-it-touches) before you use it.
 
-[繁體中文說明 / Cantonese notes](README.zh-HK.md)
+[繁體中文說明](README.zh-Hant.md)
 
 ## What it does
 
@@ -64,7 +64,7 @@ Claude Code conversations are stored as transcripts in `~\.claude\projects\...`,
 
 **Deletes.** If a conversation file disappears from one runtime it is removed from the others, but only as a move to `<home>\sync-trash\<date>\<runtime>\`. If more than `deleteGuard` (3) files vanish at once, nothing is propagated. Without this, a deleted conversation is re-created from another runtime on the next pass.
 
-**Undo.** Before any file is overwritten, the previous copy is saved in `<home>\sync-undo\` and kept for 7 days.
+**Undo.** Before any file is overwritten, the previous copy is saved in `<home>\sync-undo\<runtime>\`. It is a short-term safety net, not an archive: see [Disk usage](#disk-usage).
 
 **Ending stale engines is opt-in.** With `"recycle": true` the sync also ends the stale engine process of a conversation that was really worked on elsewhere (focus or title changes do not count). The app respawns it on the next message and reads the full transcript. It is **off by default** because the first version did this unconditionally and force-ended engines in the middle of a turn. If you enable it, these safeguards apply:
 
@@ -74,10 +74,25 @@ Claude Code conversations are stored as transcripts in `~\.claude\projects\...`,
 
 Expect a notice such as "Claude can't use thinking from another organization" after switching accounts, and a slightly slower, costlier first reply: the earlier reasoning blocks of the other account cannot be reused and are regenerated. Context itself is not lost.
 
+## Disk usage
+
+Nothing this tool writes grows without bound. All limits are configurable in `multi-claude.json`; the defaults are:
+
+| What | Location | Default limit |
+|---|---|---|
+| Copies of files before they are overwritten | `<home>\sync-undo\<runtime>\` | newest **3** per conversation and runtime, nothing older than **1 day**, **100 MB** in total (oldest removed first) |
+| Conversations deleted in one runtime | `<home>\sync-trash\<date>\<runtime>\` | **14 days**, **50 MB** in total |
+| Log | `<home>\sync.log` | rotates to `sync.log.old` at **1 MB**, so at most about 2 MB |
+| Sync state | `<home>\sync-state.json` | a few KB, rewritten in place |
+
+Housekeeping runs at most every 10 minutes during a sync pass. A conversation record is a small JSON file (typically 5 to 50 KB), but it is rewritten frequently while a conversation is running and is copied to every runtime. In the author's own setup (five runtimes) an unlimited undo history grew by roughly 100 MB per day. The undo copies are only meant for undoing a bad sync within the same day; you can lower the limits further, or delete the `sync-undo` folder at any time without affecting anything else. `multi-claude status` prints the current size of the undo and trash folders.
+
+Settings: `undoKeepDays`, `undoKeepPerFile`, `undoMaxMB`, `trashKeepDays`, `trashMaxMB`, `logMaxBytes`, `pruneIntervalMs`.
+
 ## What it touches
 
 * Creates the home folder, one profile folder per extra runtime, launcher scripts, icons and shortcuts. `multi-claude remove` leaves them in place.
-* Reads and writes `claude-code-sessions\<account>\<org>\local_*.json` in every runtime. Deletions are moves to `<home>\sync-trash`; overwritten files are copied to `<home>\sync-undo` first. It never touches transcripts, and skips `scheduled-tasks.json`.
+* Reads and writes `claude-code-sessions\<account>\<org>\local_*.json` in every runtime. Deletions are moves to `<home>\sync-trash`; overwritten files are copied to `<home>\sync-undo` first (size- and age-limited, see [Disk usage](#disk-usage)). It never touches transcripts, and skips `scheduled-tasks.json`.
 * Only if you set `"recycle": true`: ends `claude.exe` processes that match `stream-json` and `resume=<id>` and belong to a runtime other than the one you just used. It never ends app windows.
 * `multi-claude login` starts a hidden PowerShell loop for a limited time. It reads the one-time `claude://` sign-in link from the command line of the process Windows starts for it and passes it to your own extra runtime on the same machine. The link is never printed or stored; only its host/path and length are logged. If you do not want this, sign in with a method that does not use the browser redirect or skip `multi-claude login`.
 * Nothing is sent over the network by this tool.

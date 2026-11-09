@@ -9,6 +9,14 @@ export const DEFAULTS = Object.freeze({
   recycle: false,            // opt-in: end stale per-conversation processes in the other runtimes (see README, "How context is kept in sync")
   deleteConfirmMs: 1500,     // wait before trusting that a file was really deleted (a runtime may be mid atomic-rename)
   deleteGuard: 3,            // more files than this vanishing at once is not treated as a deletion
+  // Disk limits. Nothing this tool writes grows without bound.
+  undoKeepDays: 1,           // overwritten copies (<home>/sync-undo) older than this are deleted
+  undoKeepPerFile: 3,        // ...and only the newest N copies per conversation and runtime are kept
+  undoMaxMB: 100,            // ...and the whole folder is capped (oldest copies go first)
+  trashKeepDays: 14,         // conversations deleted in one runtime stay recoverable in <home>/sync-trash this long
+  trashMaxMB: 50,
+  logMaxBytes: 1048576,      // sync.log rotates to sync.log.old at this size
+  pruneIntervalMs: 600000,   // housekeeping runs at most this often
 });
 
 export function homeDir(env = process.env) {

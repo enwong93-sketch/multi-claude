@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
@@ -20,7 +20,7 @@ export function findClaudeExe() {
 }
 
 const need = cfg => { if (!existsSync(configPath(cfg.home))) throw new Error(`No configuration yet. Run: multi-claude init`); };
-const logOf = cfg => fileLogger(join(cfg.home, 'sync.log'));
+const logOf = cfg => fileLogger(join(cfg.home, 'sync.log'), cfg.logMaxBytes);
 const runtimeByName = (cfg, name) => {
   const rt = allRuntimes(cfg).find(r => r.name.toLowerCase() === String(name).toLowerCase());
   if (!rt) throw new Error(`Unknown runtime "${name}". Known: ${allRuntimes(cfg).map(r => r.name).join(', ')}`);
@@ -149,6 +149,8 @@ export function cmdStatus() {
     const files = sides.reduce((n, s) => n + readdirSync(s.dir).filter(f => /^local_.*\.json$/.test(f)).length, 0);
     console.log(`${r.name.padEnd(12)} app:${main ? 'running' : 'stopped'}  conversation processes:${convs}  session dirs:${sides.length}  session files:${files}`);
   }
+  const du = d => { let n = 0; const w = p => { let es; try { es = readdirSync(p, { withFileTypes: true }); } catch { return; } for (const e of es) { const q = join(p, e.name); if (e.isDirectory()) w(q); else { try { n += statSync(q).size; } catch { /* ignore */ } } } }; w(d); return (n / 1048576).toFixed(1) + ' MB'; };
+  console.log(`disk: undo ${du(join(cfg.home, 'sync-undo'))} (cap ${cfg.undoMaxMB} MB), trash ${du(join(cfg.home, 'sync-trash'))} (cap ${cfg.trashMaxMB} MB)`);
   console.log(`sync watcher: ${watcherAlive(cfg) ? 'running (pid ' + watcherAlive(cfg) + ')' : 'not running'}`);
 }
 

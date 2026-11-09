@@ -119,3 +119,43 @@ test('scheduled-tasks.json is never synced', () => {
   assert.ok(!existsSync(join(dirs.B, 'scheduled-tasks.json')));
   assert.ok(readdirSync(dirs.A).includes('local_aaaa.json'));
 });
+
+// ---- disk limits ------------------------------------------------------------------------------------------------------------------------
+import { pruneTree, fileLogger } from '../src/sync.mjs';
+import { statSync } from 'node:fs';
+
+test('undo copies are limited to the newest N per conversation and runtime', () => {
+  const { dirs, cfg, root } = setup({ pruneIntervalMs: 0, undoKeepPerFile: 3 }); const t0 = Date.now();
+  put(dirs.A, 'aaaa', sess(1), 0, t0);
+  createSync({ cfg, now: () => t0 }).syncOnce();                                  // mirrored to B and C
+  for (let i = 2; i <= 12; i++) { put(dirs.A, 'aaaa', sess(i * 1000), 0, t0 + i); createSync({ cfg, now: () => t0 + i }).syncOnce(); }
+  const kept = walk(join(root, 'sync-undo')).filter(f => /[\/]B[\/]local_aaaa\.json\./.test(f));
+  assert.ok(kept.length <= 3, `at most 3 undo copies for B, found ${kept.length}`);
+});
+
+test('old undo copies and the trash are pruned by age', () => {
+  const { cfg, root } = setup({ pruneIntervalMs: 0, undoKeepDays: 1, trashKeepDays: 14 });
+  const u = join(root, 'sync-undo', 'B'); mkdirSync(u, { recursive: true });
+  const tr = join(root, 'sync-trash', '2026-01-01', 'B'); mkdirSync(tr, { recursive: true });
+  const day = 86400000, now = Date.now();
+  const mk = (p, ageDays) => { writeFileSync(p, 'x'); const t = new Date(now - ageDays * day); utimesSync(p, t, t); };
+  mk(join(u, 'local_old.json.1-0'), 3); mk(join(u, 'local_new.json.2-0'), 0.1);
+  mk(join(tr, 'local_gone-old.json'), 20); mk(join(tr, 'local_gone-new.json'), 2);
+  createSync({ cfg, now: () => now }).syncOnce();
+  assert.ok(!existsSync(join(u, 'local_old.json.1-0')) && existsSync(join(u, 'local_new.json.2-0')));
+  assert.ok(!existsSync(join(tr, 'local_gone-old.json')) && existsSync(join(tr, 'local_gone-new.json')));
+});
+
+test('a size cap removes the oldest files first', () => {
+  const d = mkdtempSync(join(tmpdir(), 'mc-cap-')); const now = Date.now();
+  for (let i = 0; i < 5; i++) { const p = join(d, `f${i}`); writeFileSync(p, Buffer.alloc(1000)); const t = new Date(now - (5 - i) * 1000); utimesSync(p, t, t); }
+  pruneTree(d, { capBytes: 2500, now: () => now });
+  assert.deepEqual(readdirSync(d).sort(), ['f3', 'f4'], 'only the two newest files fit under the cap');
+});
+
+test('the log rotates instead of growing', () => {
+  const d = mkdtempSync(join(tmpdir(), 'mc-log-')); const f = join(d, 'sync.log'); const log = fileLogger(f, 2000);
+  for (let i = 0; i < 400; i++) log(`line ${i} ${'x'.repeat(40)}`);
+  assert.ok(existsSync(f + '.old'), 'rotated once the limit was passed');
+  assert.ok(statSync(f).size + statSync(f + '.old').size < 2000 * 3, 'total stays near twice the limit');
+});
