@@ -6,7 +6,9 @@ export const DEFAULTS = Object.freeze({
   busyWindowMs: 180000,      // a runtime whose session file changed this recently is considered busy: its stale process is not ended yet
   recycleCooldownMs: 600000, // never end the same conversation's process on the same runtime twice within this time
   syncIntervalMs: 20000,
-  recycle: true,             // end stale per-conversation processes in the other runtimes (see README, "How context is kept in sync")
+  recycle: false,            // opt-in: end stale per-conversation processes in the other runtimes (see README, "How context is kept in sync")
+  deleteConfirmMs: 1500,     // wait before trusting that a file was really deleted (a runtime may be mid atomic-rename)
+  deleteGuard: 3,            // more files than this vanishing at once is not treated as a deletion
 });
 
 export function homeDir(env = process.env) {

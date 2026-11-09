@@ -12,8 +12,8 @@ Run **several Claude desktop apps side by side on Windows, one account each**, a
 |---|---|
 | The Store app only runs one profile | Starts extra copies with their own `--user-data-dir`, each with its own login. Adds a desktop shortcut per runtime with the Claude icon plus a coloured letter badge (read from the installed app at run time; nothing is bundled). |
 | The extra runtime cannot sign in (the `claude://` link always opens the primary app) | `multi-claude login` forwards the sign-in link from the browser to the runtime that is waiting for it. |
-| Each runtime only lists its own Code conversations | Mirrors the session index files between all runtimes (newest copy wins, no deletes). |
-| After switching runtime, the model "forgets" the work done in the other one | Ends the stale per-conversation engine process in the other runtimes, so the next message re-reads the shared transcript. |
+| Each runtime only lists its own Code conversations | Mirrors the session index files between all runtimes. The copy that is **further along** wins (not the newest file); deleting a conversation in one runtime removes it from the others through a trash folder; every overwritten file is backed up first. |
+| After switching runtime, the model "forgets" the work done in the other one | Optional (`"recycle": true`): ends the stale per-conversation engine process in the other runtimes, so the next message re-reads the shared transcript. **Off by default**, see below. |
 
 ## Requirements
 
@@ -54,13 +54,19 @@ multi-claude list | status | doctor
 multi-claude remove <name>        # forgets the runtime; never deletes its data
 ```
 
-Configuration is one file, `<home>\multi-claude.json`: runtime names, profile folders and the timing knobs `busyWindowMs`, `recycleCooldownMs`, `syncIntervalMs`, `recycle`. Set `"recycle": false` to mirror the session lists only and never end any process.
+Configuration is one file, `<home>\multi-claude.json`: runtime names, profile folders and the timing knobs `busyWindowMs`, `recycleCooldownMs`, `syncIntervalMs`, `deleteConfirmMs`, `deleteGuard` and `recycle` (default `false`).
 
 ## How context is kept in sync
 
-Claude Code conversations are stored as transcripts in `~\.claude\projects\...`, shared by every runtime, plus one small index file per conversation in each runtime's own `claude-code-sessions\<account>\<org>\local_*.json`. Mirroring the index files makes a conversation *visible* everywhere. It does not refresh the model's memory: each runtime keeps the conversation in an in-memory engine process (`claude.exe --resume=<id>`), so the other runtime's engine still holds the old state.
+Claude Code conversations are stored as transcripts in `~\.claude\projects\...`, shared by every runtime, plus one small index file per conversation in each runtime's own `claude-code-sessions\<account>\<org>\local_*.json`. Mirroring the index files makes a conversation *visible* everywhere. It does not refresh the model's memory: each runtime keeps the conversation in an in-memory engine process (`claude.exe --resume=<id>`), so the other runtime's engine can still hold the old state.
 
-The sync therefore also ends that stale engine process when a conversation was really worked on elsewhere (its `lastActivityAt` is newer; focus or title changes do not count). The app respawns the engine on the next message and reads the full transcript. Safeguards:
+**Which copy wins.** The record that is further along (`lastActivityAt`, then `completedTurns`) wins; the file's modification time is only a tie-break. The app rewrites its own, possibly stale, copy whenever a conversation is merely focused, so trusting the newest file lets an old record overwrite the real progress in every runtime. This was a real data-loss bug in the first version of this tool.
+
+**Deletes.** If a conversation file disappears from one runtime it is removed from the others, but only as a move to `<home>\sync-trash\<date>\<runtime>\`. If more than `deleteGuard` (3) files vanish at once, nothing is propagated. Without this, a deleted conversation is re-created from another runtime on the next pass.
+
+**Undo.** Before any file is overwritten, the previous copy is saved in `<home>\sync-undo\` and kept for 7 days.
+
+**Ending stale engines is opt-in.** With `"recycle": true` the sync also ends the stale engine process of a conversation that was really worked on elsewhere (focus or title changes do not count). The app respawns it on the next message and reads the full transcript. It is **off by default** because the first version did this unconditionally and force-ended engines in the middle of a turn. If you enable it, these safeguards apply:
 
 * a runtime whose index file changed in the last `busyWindowMs` (3 min) is considered busy; the recycle is deferred, and dropped if that runtime did newer work meanwhile;
 * at most one recycle per conversation and runtime every `recycleCooldownMs` (10 min);
@@ -71,13 +77,15 @@ Expect a notice such as "Claude can't use thinking from another organization" af
 ## What it touches
 
 * Creates the home folder, one profile folder per extra runtime, launcher scripts, icons and shortcuts. `multi-claude remove` leaves them in place.
-* Reads and writes `claude-code-sessions\<account>\<org>\local_*.json` in every runtime. It never deletes, never touches transcripts, and skips `scheduled-tasks.json`.
-* Ends `claude.exe` processes that match `stream-json` and `resume=<id>` and belong to a runtime other than the one you just used. It never ends app windows.
+* Reads and writes `claude-code-sessions\<account>\<org>\local_*.json` in every runtime. Deletions are moves to `<home>\sync-trash`; overwritten files are copied to `<home>\sync-undo` first. It never touches transcripts, and skips `scheduled-tasks.json`.
+* Only if you set `"recycle": true`: ends `claude.exe` processes that match `stream-json` and `resume=<id>` and belong to a runtime other than the one you just used. It never ends app windows.
 * `multi-claude login` starts a hidden PowerShell loop for a limited time. It reads the one-time `claude://` sign-in link from the command line of the process Windows starts for it and passes it to your own extra runtime on the same machine. The link is never printed or stored; only its host/path and length are logged. If you do not want this, sign in with a method that does not use the browser redirect or skip `multi-claude login`.
 * Nothing is sent over the network by this tool.
 
 ## Known limits
 
+* **Store updates close every runtime.** When the Microsoft Store updates the Claude package, Windows closes all running copies, including your extra runtimes, and unsaved work is lost. Update at a quiet moment, or turn off Store app auto-update (needs administrator rights).
+* **Sign-in link.** Behaviour differs by build: on some builds the `claude://` link is handled by the already running primary app, so `multi-claude login` cannot see it. If sign-in does not reach the extra runtime, try again with the primary app closed, or use another sign-in method offered on the login screen. Expired sign-ins in an extra runtime show up as `401 ... token has expired`; sign in again in that runtime.
 * One account per runtime. If you switch accounts inside a runtime, remove stale `claude-code-sessions\<account>` folders or they will be mirrored too.
 * Conversations are mirrored as listed by the app; Cowork sessions are not synced.
 * Sidebar grouping can differ between runtimes: conversations started in a scratch folder of another runtime may show up under a folder named after that scratch folder instead of "No folder", because the app decides this relative to its own data folder. Rewriting working directories is deliberately not done, as it could break transcript lookup.
