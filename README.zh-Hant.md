@@ -29,6 +29,12 @@ node bin/multi-claude.mjs add C
 
 每個 Runtime 首次登入後：先開啟一次 **Code** 分頁，再將該 Runtime **關閉後重新開啟**一次，側邊欄才會列出已同步的對話。之後請從桌面捷徑啟動。釘選到工作列需自行以右鍵操作，Windows 不允許以指令碼代為完成。
 
+## Antigravity（實驗性）
+
+`multi-claude add <名稱> --app antigravity` 會新增另一個 Google Antigravity 實例，具獨立登入設定檔（`--user-data-dir`）、啟動器，以及使用 Antigravity 原生圖示的桌面捷徑。以 `multi-claude launch <名稱>` 啟動。
+
+Antigravity 不需要鏡像：其對話固定儲存於 `~/.gemini/antigravity`，與設定檔無關，故所有實例本來就看到同一批對話，僅登入狀態按設定檔分開。現況：啟動、設定檔分離及程序偵測已有測試；第二個實例實際共用對話一事，尚未以真實對話驗證。
+
 ## 磁碟用量
 
 本工具寫入的任何內容都不會無限成長，所有上限均可在 `multi-claude.json` 中調整。預設值如下：

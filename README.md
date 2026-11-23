@@ -74,6 +74,12 @@ Claude Code conversations are stored as transcripts in `~\.claude\projects\...`,
 
 Expect a notice such as "Claude can't use thinking from another organization" after switching accounts, and a slightly slower, costlier first reply: the earlier reasoning blocks of the other account cannot be reused and are regenerated. Context itself is not lost.
 
+## Antigravity (experimental)
+
+`multi-claude add <name> --app antigravity` adds a second Google Antigravity instance with its own sign-in profile (`--user-data-dir`), a launcher and a desktop shortcut that uses Antigravity's own icon. Start it with `multi-claude launch <name>`.
+
+Nothing is mirrored for Antigravity: it stores conversations in one fixed folder, `~/.gemini/antigravity`, regardless of the profile, so every instance already sees the same conversations. Only the sign-in is per profile. Status: the launch command, profile separation and process detection are tested; whether a second instance shares conversations in practice has not been verified on a real conversation yet.
+
 ## Disk usage
 
 Nothing this tool writes grows without bound. All limits are configurable in `multi-claude.json`; the defaults are:

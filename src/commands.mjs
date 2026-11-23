@@ -3,8 +3,8 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
-import { loadConfig, saveConfig, addRuntime, allRuntimes, homeDir, configPath, validateName } from './config.mjs';
-import { listClaudeProcesses, runtimeOf, isMainProcess, endResumeProcesses, extraRuntimeRunning } from './proc.mjs';
+import { loadConfig, saveConfig, addRuntime, allRuntimes, homeDir, configPath, validateName, isClaude } from './config.mjs';
+import { listClaudeProcesses, runtimeOf, isMainProcess, endResumeProcesses, extraRuntimeRunning, antigravityRunning } from './proc.mjs';
 import { createSync, runWatch, discoverSides, fileLogger } from './sync.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +18,14 @@ export function findClaudeExe() {
   if (!exe || !existsSync(exe)) throw new Error('The Claude desktop app (Microsoft Store / MSIX package "Claude") was not found.');
   return exe;
 }
+
+export function findAntigravityExe(env = process.env) {
+  const exe = join(env.LOCALAPPDATA || join(env.USERPROFILE || homedir(), 'AppData', 'Local'), 'Programs', 'antigravity', 'Antigravity.exe');
+  if (!existsSync(exe)) throw new Error(`Antigravity was not found at ${exe}.`);
+  return exe;
+}
+const exeOf = rt => (isClaude(rt) ? findClaudeExe() : findAntigravityExe());
+const appTitle = rt => (isClaude(rt) ? 'Claude' : 'Antigravity');
 
 const need = cfg => { if (!existsSync(configPath(cfg.home))) throw new Error(`No configuration yet. Run: multi-claude init`); };
 const logOf = cfg => fileLogger(join(cfg.home, 'sync.log'), cfg.logMaxBytes);
@@ -51,22 +59,24 @@ export function cmdShortcuts(args) {
   for (const rt of targets) {
     const idx = allRuntimes(cfg).indexOf(allRuntimes(cfg).find(r => r.name === rt.name));
     const vbs = writeLauncher(cfg, rt);
-    const out = psFile('make-shortcut.ps1', ['-Letter', rt.name, '-Color', rt.color || palette[idx] || '#555555', '-Title', `Claude ${rt.name}`,
-      '-Vbs', vbs, '-IconPath', join(cfg.home, rt.name, 'icon.ico'), '-OutDirs', `${desktop},${join(cfg.home, 'Launchers')}`, '-BaseExe', findClaudeExe()]);
+    const out = psFile('make-shortcut.ps1', ['-Letter', rt.name, '-Color', rt.color || palette[idx] || '#555555', '-Title', `${appTitle(rt)} ${rt.name}`,
+      '-Vbs', vbs, '-IconPath', join(cfg.home, rt.name, 'icon.ico'), '-OutDirs', `${desktop},${join(cfg.home, 'Launchers')}`, '-BaseExe', exeOf(rt)]);
     console.log(out.trim());
   }
   console.log('Pin them to the taskbar yourself (right-click > Pin to taskbar); Windows does not allow scripting that.');
 }
 
 export function cmdAdd(args) {
-  const name = args._[0]; if (!name) throw new Error('Usage: multi-claude add <name> [--profile <folder>] [--no-shortcuts]');
+  const name = args._[0]; if (!name) throw new Error('Usage: multi-claude add <name> [--app claude|antigravity] [--profile <folder>] [--no-shortcuts]');
   const cfg = loadConfig(); need(cfg);
-  const rt = addRuntime(cfg, name, args.profile);
+  const app = args.app === undefined ? 'claude' : String(args.app).toLowerCase();
+  const rt = addRuntime(cfg, name, args.profile, app);
   mkdirSync(rt.profile, { recursive: true });
   saveConfig(cfg);
   console.log(`Added runtime "${rt.name}" with profile ${rt.profile}`);
   if (!args['no-shortcuts']) cmdShortcuts({ _: [rt.name] });
-  console.log(`Next: multi-claude login ${rt.name}   (opens the runtime and helps the sign-in link reach it)`);
+  if (isClaude(rt)) console.log(`Next: multi-claude login ${rt.name}   (opens the runtime and helps the sign-in link reach it)`);
+  else console.log(`Next: multi-claude launch ${rt.name}   (sign in to Antigravity inside that window; conversations live in the shared ~/.gemini/antigravity folder, so nothing is mirrored)`);
 }
 
 export function cmdRemove(args) {
@@ -79,11 +89,11 @@ export function cmdRemove(args) {
 
 export function cmdList() {
   const cfg = loadConfig(); need(cfg);
-  for (const r of allRuntimes(cfg)) console.log(`${r.primary ? '*' : ' '} ${r.name.padEnd(12)} ${r.userData}`);
+  for (const r of allRuntimes(cfg)) console.log(`${r.primary ? '*' : ' '} ${r.name.padEnd(12)} ${(r.app || 'claude').padEnd(12)} ${r.userData}`);
 }
 
 function startApp(rt) {
-  const exe = findClaudeExe();
+  const exe = exeOf(rt);
   const argv = rt.primary ? [] : [`--user-data-dir=${rt.userData}`];
   spawn(exe, argv, { detached: true, stdio: 'ignore' }).unref();
 }
@@ -101,7 +111,11 @@ export function ensureWatcher(cfg) {
 export function cmdLaunch(args) {
   const cfg = loadConfig(); need(cfg);
   const rt = runtimeByName(cfg, args._[0]);
-  const runtimes = allRuntimes(cfg);
+  if (!isClaude(rt)) {
+    if (antigravityRunning(rt.userData)) { console.log(`${rt.name} is already running.`); return; }
+    startApp(rt); console.log(`Started ${rt.name} (Antigravity).`); return;
+  }
+  const runtimes = allRuntimes(cfg).filter(isClaude);
   try { createSync({ cfg, log: logOf(cfg) }).syncOnce(); } catch { /* sync is best effort */ }
   ensureWatcher(cfg);
   const running = listClaudeProcesses().some(p => isMainProcess(p.cmd) && runtimeOf(p.cmd, runtimes)?.name === rt.name);
@@ -114,6 +128,7 @@ export function cmdLogin(args) {
   const cfg = loadConfig(); need(cfg);
   const rt = runtimeByName(cfg, args._[0]);
   if (rt.primary) throw new Error('The primary runtime signs in the normal way.');
+  if (!isClaude(rt)) throw new Error('login is only for Claude runtimes. Antigravity: launch it and sign in inside its window.');
   const minutes = Number(args.minutes || 10);
   const exe = findClaudeExe();
   const log = join(cfg.home, rt.name, 'capture.log');
@@ -126,7 +141,7 @@ export function cmdLogin(args) {
 
 export function cmdSync(args) {
   const cfg = loadConfig(); need(cfg);
-  const runtimes = allRuntimes(cfg); const log = logOf(cfg);
+  const runtimes = allRuntimes(cfg).filter(isClaude); const log = logOf(cfg);
   const recycle = (name, id) => endResumeProcesses(name, id, runtimes);
   if (args.watch) {
     if (watcherAlive(cfg)) { console.log('A sync watcher is already running.'); return; }
@@ -141,7 +156,8 @@ export function cmdSync(args) {
 
 export function cmdStatus() {
   const cfg = loadConfig(); need(cfg);
-  const runtimes = allRuntimes(cfg); const procs = listClaudeProcesses();
+  const runtimes = allRuntimes(cfg).filter(isClaude); const procs = listClaudeProcesses();
+  for (const r of allRuntimes(cfg).filter(r => !isClaude(r))) console.log(`${r.name.padEnd(12)} app:${antigravityRunning(r.userData) ? 'running' : 'stopped'}  (Antigravity, conversations shared via ~/.gemini/antigravity)`);
   for (const r of runtimes) {
     const mine = procs.filter(p => runtimeOf(p.cmd, runtimes)?.name === r.name);
     const main = mine.some(p => isMainProcess(p.cmd)); const convs = mine.filter(p => /stream-json/.test(p.cmd)).length;
@@ -160,8 +176,11 @@ export function cmdDoctor() {
   ok(Number(process.versions.node.split('.')[0]) >= 20, `node ${process.versions.node}`);
   let exe = null; try { exe = findClaudeExe(); } catch { /* reported below */ }
   ok(!!exe, `Claude desktop installed${exe ? ': ' + exe : ''}`);
+  let agy = null; try { agy = findAntigravityExe(); } catch { /* optional */ }
+  console.log(`INFO Antigravity ${agy ? 'installed: ' + agy : 'not installed (optional)'}`);
   const cfg = loadConfig(); ok(existsSync(configPath(cfg.home)), `config ${configPath(cfg.home)}`);
   for (const r of allRuntimes(cfg)) {
+    if (!isClaude(r)) { ok(existsSync(r.userData), `${r.name}: Antigravity profile ${r.userData}`); continue; }
     ok(existsSync(r.userData), `${r.name}: userData ${r.userData}`);
     ok(discoverSides(cfg).some(s => s.runtime === r.name), `${r.name}: has a claude-code-sessions\\<account>\\<org> folder (appears after the first Code use)`);
   }

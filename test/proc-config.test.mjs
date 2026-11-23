@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runtimeOf, isMainProcess, endResumeProcesses } from '../src/proc.mjs';
-import { addRuntime, allRuntimes, validateName, DEFAULTS } from '../src/config.mjs';
+import { runtimeOf, isMainProcess, endResumeProcesses, antigravityRunning } from '../src/proc.mjs';
+import { addRuntime, allRuntimes, validateName, isClaude, DEFAULTS } from '../src/config.mjs';
 
 const rts = [
   { name: 'A', userData: 'C:\\Users\\me\\AppData\\Roaming\\Claude', primary: true },
@@ -46,4 +46,20 @@ test('runtime names and profiles are validated', () => {
   assert.equal(allRuntimes(cfg).length, 2);
   assert.throws(() => addRuntime(cfg, 'b'), /already exists/);
   assert.throws(() => addRuntime(cfg, 'D', cfg.runtimes[0].profile), /already used/);
+});
+
+test('antigravity runtimes: own profile, never treated as Claude, detected by --user-data-dir', () => {
+  const cfg = { home: 'D:\\h', ...DEFAULTS, primary: { name: 'A', userData: 'C:\\x\\Claude' }, runtimes: [] };
+  const g =addRuntime(cfg, 'G2', undefined, 'antigravity');
+  assert.equal(g.app, 'antigravity');
+  assert.equal(allRuntimes(cfg).filter(isClaude).length, 1);
+  assert.throws(() => addRuntime(cfg, 'X', undefined, 'vscode'), /Unknown app/);
+  assert.equal(addRuntime(cfg, 'B').app, undefined); // Claude entries keep the old config shape
+  const list = [
+    { pid: 1, cmd: `Antigravity.exe --user-data-dir=${g.profile}` },
+    { pid: 2, cmd: `Antigravity.exe --type=renderer --user-data-dir=${g.profile}` },
+  ];
+  assert.equal(antigravityRunning(g.profile, list), true);
+  assert.equal(antigravityRunning('D:\\other\\profile', list), false);
+  assert.equal(antigravityRunning(g.profile, [list[1]]), false);
 });

@@ -48,15 +48,21 @@ export function validateName(name) {
 
 /** All runtimes including the primary, each with its userData directory. */
 export function allRuntimes(cfg) {
-  return [{ name: cfg.primary.name, userData: cfg.primary.userData, primary: true }, ...cfg.runtimes.map(r => ({ ...r, userData: r.profile }))];
+  return [{ name: cfg.primary.name, userData: cfg.primary.userData, primary: true, app: 'claude' }, ...cfg.runtimes.map(r => ({ app: 'claude', ...r, userData: r.profile }))];
 }
 
-export function addRuntime(cfg, name, profile) {
+/** Apps a runtime can be. Antigravity keeps all conversations in one fixed ~/.gemini/antigravity folder (not per --user-data-dir), so an extra
+ *  Antigravity runtime only needs its own login profile; there is nothing to mirror. */
+export const APPS = Object.freeze(['claude', 'antigravity']);
+export const isClaude = rt => (rt.app || 'claude') === 'claude';
+
+export function addRuntime(cfg, name, profile, app = 'claude') {
   validateName(name);
+  if (!APPS.includes(app)) throw new Error(`Unknown app "${app}". Use one of: ${APPS.join(', ')}.`);
   if (allRuntimes(cfg).some(r => r.name.toLowerCase() === name.toLowerCase())) throw new Error(`Runtime "${name}" already exists.`);
   const p = resolve(profile || join(cfg.home, name, 'profile'));
   if (allRuntimes(cfg).some(r => resolve(r.userData).toLowerCase() === p.toLowerCase())) throw new Error(`Profile folder ${p} is already used by another runtime.`);
-  const rt = { name, profile: p, color: pickColor(cfg.runtimes.length) };
+  const rt = { name, profile: p, color: pickColor(cfg.runtimes.length), ...(app === 'claude' ? {} : { app }) };
   cfg.runtimes.push(rt);
   return rt;
 }

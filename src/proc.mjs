@@ -14,6 +14,17 @@ export function listClaudeProcesses() {
 
 const norm = p => resolve(p).toLowerCase().replace(/[\\/]+$/, '');
 
+/** True when an Antigravity app window process was started with this --user-data-dir. */
+export function antigravityRunning(userData, list = null) {
+  const procs = list ?? (() => {
+    const out = ps(`@(Get-CimInstance Win32_Process -Filter "Name='Antigravity.exe'" | Select-Object ProcessId,CommandLine) | ConvertTo-Json -Compress`).trim();
+    if (!out) return [];
+    const j = JSON.parse(out); return (Array.isArray(j) ? j : [j]).filter(p => p && p.CommandLine).map(p => ({ pid: p.ProcessId, cmd: p.CommandLine }));
+  })();
+  const u = norm(userData);
+  return procs.some(p => isMainProcess(p.cmd) && p.cmd.toLowerCase().replace(/\//g, '\\').includes(u));
+}
+
 /**
  * Which runtime owns a process? The one whose userData folder appears in the command line (the CLI engine lives under
  * <userData>\\claude-code\\ and the app itself is started with --user-data-dir). The longest match wins; the primary app

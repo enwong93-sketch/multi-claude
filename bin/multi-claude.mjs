@@ -4,7 +4,7 @@ import * as c from '../src/commands.mjs';
 const HELP = `multi-claude - several Claude desktop runtimes with synced Claude Code sessions (Windows)
 
   multi-claude init [--primary-name A] [--primary-data <folder>]   create the config (home: %MULTI_CLAUDE_HOME% or ~/MultiClaude)
-  multi-claude add <name> [--profile <folder>] [--no-shortcuts]    add a runtime (own profile folder, launcher, desktop shortcut)
+  multi-claude add <name> [--app claude|antigravity] [--profile <folder>] [--no-shortcuts]   add a runtime (own profile, launcher, desktop shortcut)
   multi-claude login <name> [--minutes 10]                         open the runtime and forward the browser sign-in link to it
   multi-claude launch <name>                                       sync once, start the sync watcher, start the runtime
   multi-claude sync [--once|--watch]                               one sync pass (default) or the background watcher

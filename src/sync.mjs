@@ -9,7 +9,7 @@
 // - ending stale `claude.exe --resume=<id>` engine processes is OPT-IN (`recycle: true`); it used to be on and force-killed engines mid-turn
 import { readdirSync, statSync, copyFileSync, utimesSync, renameSync, existsSync, readFileSync, writeFileSync, unlinkSync, rmSync, watch, appendFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { allRuntimes } from './config.mjs';
+import { allRuntimes, isClaude } from './config.mjs';
 
 const FILE = /^local_[0-9a-f-]+\.json$/i;
 const dirsIn = d => { try { return readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => join(d, e.name)); } catch { return []; } };
@@ -45,7 +45,7 @@ const sleepMs = ms => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayB
 /** Every <userData>\claude-code-sessions\<account>\<org> folder that exists. Use one account per runtime. */
 export function discoverSides(cfg) {
   const out = [];
-  for (const rt of allRuntimes(cfg)) for (const acct of dirsIn(join(rt.userData, 'claude-code-sessions'))) for (const org of dirsIn(acct)) out.push({ runtime: rt.name, dir: org });
+  for (const rt of allRuntimes(cfg).filter(isClaude)) for (const acct of dirsIn(join(rt.userData, 'claude-code-sessions'))) for (const org of dirsIn(acct)) out.push({ runtime: rt.name, dir: org });
   return out;
 }
 
