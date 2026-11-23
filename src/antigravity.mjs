@@ -140,6 +140,8 @@ export function buildConversation({ tpl, turns, convId, cwd, projectId, title, o
   const stamped = turns.map((t, i) => ({ ...t, ts: t.ts || t0 + i * 1000 })).map((t, i, a) => ({ ...t, ts: Math.max(t.ts, i ? a[i - 1].ts + 1 : t.ts) }));
   const tmp = outFile + '.tmp'; rmSync(tmp, { force: true });
   const db = new DatabaseSync(tmp);
+  // Antigravity treats a trajectory file as "not initialized" unless it carries the same SQLite header settings it writes itself.
+  db.exec('PRAGMA page_size=32768; PRAGMA journal_mode=WAL; PRAGMA user_version=1;');
   for (const sql of tpl.schema) db.exec(sql);
   const insStep = db.prepare('insert into steps (idx,step_type,status,has_subtrajectory,metadata,error_details,permissions,task_details,render_info,step_payload,step_format) values (?,?,?,?,?,?,?,?,?,?,?)');
   let exec = randomUUID(), idx = 0, lastUser = null;
@@ -198,42 +200,47 @@ function stepCount(file) {
   try { const tmp = file + '.cnt'; copyFileSync(file, tmp); const d = new DatabaseSync(tmp, { readOnly: true }); const n = d.prepare('select count(*) n from steps').get().n; d.close(); rmSync(tmp, { force: true }); return n; } catch { return 0; }
 }
 
-/** The Antigravity stores to write: the agy CLI store (so agy can resume) and the desktop app's store (so the app lists them). */
+/** Stores to write. The desktop app only lists conversations that look desktop-made (trajectory source 1); the agy CLI uses source 17.
+ *  So each store is built from a template of its own kind: the desktop store from a native conversation kept in ~/.gemini/antigravity-ide. */
 export function defaultStores(env = process.env) {
-  const g = geminiDir(env);
-  return [join(g, 'antigravity-cli'), join(g, 'antigravity')].filter(d => existsSync(join(d, 'conversation_summaries.db')));
+  const g = geminiDir(env); const ok = d => existsSync(join(d, 'conversation_summaries.db'));
+  const cli = join(g, 'antigravity-cli'), hub = join(g, 'antigravity'), ide = join(g, 'antigravity-ide');
+  const out = [];
+  if (ok(cli)) out.push({ dir: cli, templateDir: cli });
+  if (ok(hub)) out.push({ dir: hub, templateDir: ok(ide) ? ide : hub });
+  return out;
 }
 
 // ---------- orchestration ----------
-export function exportSessions({ stores, sessions, state, log = () => {}, maxTurns = 400, maxMsgChars = 6000, dryRun = false, env = process.env }) {
-  if (!stores?.length) throw new Error('No Antigravity store found (expected ~/.gemini/antigravity and/or ~/.gemini/antigravity-cli).');
-  const tpl = loadTemplate(stores[0]); const out = { exported: 0, skipped: 0, missing: 0, keptAntigravityEdits: 0 };
-  for (const st of stores) mkdirSync(join(st, 'conversations'), { recursive: true });
+export function exportSessions({ stores: rawStores, sessions, state, log = () => {}, maxTurns = 400, maxMsgChars = 6000, dryRun = false, env = process.env }) {
+  const stores = (rawStores || []).map(x => (typeof x === 'string' ? { dir: x, templateDir: x } : x));
+  if (!stores.length) throw new Error('No Antigravity store found (expected ~/.gemini/antigravity and/or ~/.gemini/antigravity-cli).');
+  const out = { exported: 0, skipped: 0, missing: 0, keptAntigravityEdits: 0 };
+  const tpls = new Map(); const tplOf = st => { if (!tpls.has(st.templateDir)) tpls.set(st.templateDir, loadTemplate(st.templateDir)); return tpls.get(st.templateDir); };
+  for (const st of stores) { tplOf(st); mkdirSync(join(st.dir, 'conversations'), { recursive: true }); }
+  const cf = (st, id) => join(st.dir, 'conversations', id + '.db');
   for (const s of sessions) {
     const file = findTranscript(s.cliSessionId, env);
     if (!file) { out.missing++; continue; }
     const mt = statSync(file).mtimeMs; const prev = state[s.cliSessionId];
     const convId = prev?.convId || stableUuid('conv/' + s.cliSessionId);
-    if (prev && prev.mtime >= mt && stores.every(st => existsSync(join(st, 'conversations', convId + '.db')))) { out.skipped++; continue; }
+    if (prev && prev.mtime >= mt && stores.every(st => existsSync(cf(st, convId)))) { out.skipped++; continue; }
     // Never overwrite a conversation that was continued inside Antigravity (more steps than we wrote).
-    const grown = prev && stores.some(st => stepCount(join(st, 'conversations', convId + '.db')) > prev.turns);
-    if (grown) { out.keptAntigravityEdits++; log(`kept ${convId}: it was continued in Antigravity`); continue; }
+    if (prev && stores.some(st => stepCount(cf(st, convId)) > prev.turns)) { out.keptAntigravityEdits++; log(`kept ${convId}: it was continued in Antigravity`); continue; }
     let turns = claudeTurns(fileLines(file), { maxMsgChars });
     if (turns.length > maxTurns) turns = turns.slice(-maxTurns);
     while (turns.length && turns[0].role !== 'user') turns.shift();
     if (!turns.some(t => t.role === 'assistant')) { out.skipped++; continue; }
-    if (!prev && stores.some(st => stepCount(join(st, 'conversations', convId + '.db')) > turns.length)) { out.keptAntigravityEdits++; continue; }
+    if (!prev && stores.some(st => stepCount(cf(st, convId)) > turns.length)) { out.keptAntigravityEdits++; continue; }
     const cwd = s.cwd || turns.find(t => t.cwd)?.cwd || homedir();
     const title = (s.title || turns[0].text.split('\n')[0]).slice(0, 80);
     if (dryRun) { log(`would export ${s.cliSessionId} -> ${convId} (${turns.length} turns) ${title}`); out.exported++; continue; }
     const projectId = ensureProject(cwd, env);
-    const first = join(stores[0], 'conversations', convId + '.db');
-    const built = buildConversation({ tpl, turns, convId, cwd, projectId, title, outFile: first });
     for (const st of stores) {
-      const f = join(st, 'conversations', convId + '.db');
-      if (st !== stores[0]) { copyFileSync(first, f + '.tmp'); renameSync(f + '.tmp', f); }
-      for (const sub of ['.system_generated', '.user_uploaded', 'scratch']) mkdirSync(join(st, 'brain', convId, sub), { recursive: true });
-      upsertSummary(st, tpl, convId, built, cwd, projectId, title); // index row last: it only points at data that already exists
+      const tpl = tplOf(st);
+      const built = buildConversation({ tpl, turns, convId, cwd, projectId, title, outFile: cf(st, convId) });
+      for (const sub of ['.system_generated', '.user_uploaded', 'scratch']) mkdirSync(join(st.dir, 'brain', convId, sub), { recursive: true });
+      upsertSummary(st.dir, tpl, convId, built, cwd, projectId, title); // index row last: it only points at data that already exists
     }
     state[s.cliSessionId] = { convId, mtime: mt, turns: turns.length };
     log(`exported ${s.cliSessionId} -> ${convId} (${turns.length} turns)`); out.exported++;
