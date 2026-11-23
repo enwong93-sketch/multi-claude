@@ -78,7 +78,7 @@ Expect a notice such as "Claude can't use thinking from another organization" af
 
 Antigravity keeps one SQLite file per conversation (protobuf step records) in `~/.gemini/antigravity` (desktop app) and `~/.gemini/antigravity-cli` (agy CLI), plus an index row and a small project file under `~/.gemini/config/projects`. Conversations are per machine, not per account.
 
-`multi-claude agy-export [--since <days>] [--dry-run]` converts Claude Code sessions (the text turns of `~/.claude/projects/*/<id>.jsonl`, from every runtime) into Antigravity conversations in both stores, with a project per working folder. It clones a conversation Antigravity wrote itself, so only content changes. It needs Node 22.5+ (`node:sqlite`).
+`multi-claude agy-export [--since <days>] [--dry-run]` converts Claude Code sessions (the text turns of `~/.claude/projects/*/<id>.jsonl`, from every runtime) into Antigravity conversations in the desktop app's store, as desktop-native conversations without a project (no empty project folders are created). It clones a native conversation, so only content changes. Side chats (`/btw`) and archived sessions are skipped. `--cli` also writes the agy CLI store under different ids. Close the Antigravity desktop app before exporting; it rebuilds its list from the files on the next start. It needs Node 22.5+ (`node:sqlite`).
 
 - Re-running is cheap: unchanged sessions are skipped. A conversation you continued inside Antigravity (more steps than were exported) is never overwritten.
 - Tool calls, tool output and thinking are not exported, only the user/assistant text, each message capped at 6000 characters and the newest 400 turns kept.

@@ -141,7 +141,7 @@ export function cmdLogin(args) {
 }
 
 /** Claude Code sessions -> Antigravity conversations (agy CLI store + desktop app store). Needs Node 22.5+ (node:sqlite). */
-export async function agyExport(cfg, { since = 0, dryRun = false, log = console.log } = {}) {
+export async function agyExport(cfg, { since = 0, dryRun = false, cli = false, log = console.log } = {}) {
   const { exportSessions, defaultStores } = await import('./antigravity.mjs');
   const stateFile = join(cfg.home, 'agy-export.json');
   let state = {}; try { state = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
@@ -150,20 +150,20 @@ export async function agyExport(cfg, { since = 0, dryRun = false, log = console.
     for (const f of readdirSync(side.dir).filter(x => /^local_.*\.json$/.test(x))) {
       try {
         const j = JSON.parse(readFileSync(join(side.dir, f), 'utf8'));
-        if (!j.cliSessionId || seen.has(j.cliSessionId) || j.isArchived) continue;
+        if (!j.cliSessionId || seen.has(j.cliSessionId) || j.isArchived || j.spawnedFrom?.btw) continue; // btw side chats are not listed in Claude either
         if (since && Date.now() - (j.lastActivityAt || 0) > since * 86400000) continue;
         seen.add(j.cliSessionId); sessions.push({ cliSessionId: j.cliSessionId, cwd: j.cwd || j.originCwd, title: j.title });
       } catch { /* unreadable index file */ }
     }
   }
-  const r = exportSessions({ stores: defaultStores(), sessions, state, log, dryRun });
+  const r = exportSessions({ stores: defaultStores(process.env, { cli }), sessions, state, log, dryRun });
   if (!dryRun) { mkdirSync(cfg.home, { recursive: true }); writeFileSync(stateFile, JSON.stringify(state, null, 1)); }
   return r;
 }
 
 export async function cmdAgyExport(args) {
   const cfg = loadConfig(); need(cfg);
-  const r = await agyExport(cfg, { since: Number(args.since || 0), dryRun: !!args['dry-run'] });
+  const r = await agyExport(cfg, { since: Number(args.since || 0), dryRun: !!args['dry-run'], cli: !!args.cli });
   console.log(`Antigravity export: ${r.exported} written, ${r.skipped} unchanged, ${r.missing} without transcript, ${r.keptAntigravityEdits} kept (continued in Antigravity).`);
   console.log('Restart the Antigravity desktop app once so it re-reads its conversation list.');
 }

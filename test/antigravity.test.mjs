@@ -33,6 +33,16 @@ test('claudeTurns keeps real text, drops reminders/tools/meta and merges same-ro
   assert.deepEqual(claudeTurns(lines).map(x => [x.role, x.text]), [['user', 'hello'], ['assistant', 'part one\n\npart two'], ['user', 'next']]);
 });
 
+test('claudeTurns drops task notifications and the attach marker', () => {
+  const L = o => JSON.stringify(o);
+  const t = claudeTurns([
+    L({ type: 'user', message: { content: '<task-notification>\n<task-id>x</task-id>\n</task-notification>' } }),
+    L({ type: 'user', message: { content: '<!-- attach -->\nreal question' } }),
+    L({ type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } }),
+  ]);
+  assert.deepEqual(t.map(x => [x.role, x.text]), [['user', 'real question'], ['assistant', 'answer']]);
+});
+
 test('stable ids are deterministic uuid v5-shaped', () => {
   assert.equal(stableUuid('a'), stableUuid('a')); assert.notEqual(stableUuid('a'), stableUuid('b'));
   assert.match(stableUuid('a'), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -75,18 +85,18 @@ test('exportSessions writes an indexable conversation and never overwrites one c
   ].map(o => JSON.stringify(o)).join('\n'));
   const state = {}; const sess = [{ cliSessionId: 'sess-1', cwd: 'D:\\Proj', title: 'Math' }];
   assert.equal(exportSessions({ stores: [store], sessions: sess, state, env }).exported, 1);
-  const convId = state['sess-1'].convId;
+  const convId = stableUuid('conv/sess-1');
   const d = new DatabaseSync(join(store, 'conversations', convId + '.db'), { readOnly: true });
   const steps = d.prepare('select * from steps order by idx').all();
   assert.equal(steps.length, 2);
-  assert.equal(find(decode(Buffer.from(steps[0].step_payload)), [19, 3, 1]).v.toString(), 'what is 2+2?');
+  assert.equal(find(decode(Buffer.from(steps[0].step_payload)), [19, 3, 1]).v.toString(), '【Math】\nwhat is 2+2?');
   assert.equal(find(decode(Buffer.from(steps[1].step_payload)), [20, 1]).v.toString(), 'It is 4.');
   assert.equal(find(decode(Buffer.from(steps[1].step_payload)), [20, 14]), null);
   assert.equal(find(decode(Buffer.from(d.prepare('select data from trajectory_metadata_blob').get().data)), [6]).v.toString(), convId);
   d.close();
   const s = new DatabaseSync(join(store, 'conversation_summaries.db'), { readOnly: true });
   const row = s.prepare('select * from conversation_summaries where conversation_id=?').get(convId);
-  assert.equal(row.title, 'Math'); assert.equal(row.step_count, 2); assert.match(row.workspace_uris, /D:\/Proj/);
+  assert.equal(row.title, 'Math'); assert.equal(row.step_count, 2); assert.equal(row.workspace_uris, ''); assert.equal(row.project_id, 'outside-of-project');
   s.close();
   assert.equal(exportSessions({ stores: [store], sessions: sess, state, env }).skipped, 1); // unchanged transcript
   const w = new DatabaseSync(join(store, 'conversations', convId + '.db'));

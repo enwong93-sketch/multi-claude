@@ -33,7 +33,7 @@ node bin/multi-claude.mjs add C
 
 Antigravity 每個對話一個 SQLite 檔（protobuf 步驟記錄），存於 `~/.gemini/antigravity`（桌面應用）及 `~/.gemini/antigravity-cli`（agy 命令列），另有索引列及 `~/.gemini/config/projects` 下的專案小檔。對話按電腦區分，與帳戶無關。
 
-`multi-claude agy-export [--since <天數>] [--dry-run]` 會將 Claude Code 對話（各執行環境 `~/.claude/projects/*/<id>.jsonl` 內的文字回合）轉成 Antigravity 對話，同時寫入上述兩個儲存位置，並按工作資料夾建立專案。轉換以 Antigravity 自行產生的對話為範本，只替換內容。需要 Node 22.5 或以上（`node:sqlite`）。
+`multi-claude agy-export [--since <天數>] [--dry-run]` 會將 Claude Code 對話（各執行環境 `~/.claude/projects/*/<id>.jsonl` 內的文字回合）轉成 Antigravity 對話，寫入桌面應用的儲存位置，成為與桌面原生對話相同格式、不屬任何專案的對話（不會建立空的專案資料夾）。轉換以原生對話為範本，只替換內容。已封存及 `/btw` 旁枝對話會略過；`--cli` 另可寫入 agy 命令列儲存（使用不同 ID）。匯出前請先關閉 Antigravity 桌面應用，它會在下次啟動時由檔案重建清單。需要 Node 22.5 或以上（`node:sqlite`）。
 
 - 重複執行成本低：未變更的對話會略過。凡在 Antigravity 內繼續過（步驟數多於匯出時）的對話，絕不覆寫。
 - 不匯出工具呼叫、工具輸出與思考過程，只匯出使用者及助理的文字；每則上限 6000 字元，保留最新 400 回合。
