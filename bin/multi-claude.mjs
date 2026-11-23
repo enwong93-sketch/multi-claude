@@ -8,6 +8,7 @@ const HELP = `multi-claude - several Claude desktop runtimes with synced Claude 
   multi-claude login <name> [--minutes 10]                         open the runtime and forward the browser sign-in link to it
   multi-claude launch <name>                                       sync once, start the sync watcher, start the runtime
   multi-claude sync [--once|--watch]                               one sync pass (default) or the background watcher
+  multi-claude agy-export [--since <days>] [--dry-run]            copy Claude Code sessions into Antigravity (agy CLI + desktop app)
   multi-claude shortcuts [name]                                    (re)create desktop shortcuts and icons
   multi-claude list | status | doctor
   multi-claude remove <name>                                       forget a runtime (never deletes its data)
@@ -24,6 +25,6 @@ function parse(argv) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 const args = parse(rest);
-const table = { init: c.cmdInit, add: c.cmdAdd, remove: c.cmdRemove, list: c.cmdList, launch: c.cmdLaunch, login: c.cmdLogin, sync: c.cmdSync, shortcuts: c.cmdShortcuts, status: c.cmdStatus, doctor: c.cmdDoctor };
+const table = { init: c.cmdInit, add: c.cmdAdd, remove: c.cmdRemove, list: c.cmdList, launch: c.cmdLaunch, login: c.cmdLogin, sync: c.cmdSync, shortcuts: c.cmdShortcuts, 'agy-export': c.cmdAgyExport, status: c.cmdStatus, doctor: c.cmdDoctor };
 if (!cmd || !table[cmd]) { console.log(HELP); process.exit(cmd ? 1 : 0); }
-try { table[cmd](args); } catch (e) { console.error(`multi-claude: ${e.message}`); process.exit(1); }
+try { await table[cmd](args); } catch (e) { console.error(`multi-claude: ${e.message}`); process.exit(1); }

@@ -31,9 +31,14 @@ node bin/multi-claude.mjs add C
 
 ## Antigravity（實驗性）
 
-`multi-claude add <名稱> --app antigravity` 會新增另一個 Google Antigravity 實例，具獨立登入設定檔（`--user-data-dir`）、啟動器，以及使用 Antigravity 原生圖示的桌面捷徑。以 `multi-claude launch <名稱>` 啟動。
+Antigravity 每個對話一個 SQLite 檔（protobuf 步驟記錄），存於 `~/.gemini/antigravity`（桌面應用）及 `~/.gemini/antigravity-cli`（agy 命令列），另有索引列及 `~/.gemini/config/projects` 下的專案小檔。對話按電腦區分，與帳戶無關。
 
-Antigravity 不需要鏡像：其對話固定儲存於 `~/.gemini/antigravity`，與設定檔無關，故所有實例本來就看到同一批對話，僅登入狀態按設定檔分開。現況：啟動、設定檔分離及程序偵測已有測試；第二個實例實際共用對話一事，尚未以真實對話驗證。
+`multi-claude agy-export [--since <天數>] [--dry-run]` 會將 Claude Code 對話（各執行環境 `~/.claude/projects/*/<id>.jsonl` 內的文字回合）轉成 Antigravity 對話，同時寫入上述兩個儲存位置，並按工作資料夾建立專案。轉換以 Antigravity 自行產生的對話為範本，只替換內容。需要 Node 22.5 或以上（`node:sqlite`）。
+
+- 重複執行成本低：未變更的對話會略過。凡在 Antigravity 內繼續過（步驟數多於匯出時）的對話，絕不覆寫。
+- 不匯出工具呼叫、工具輸出與思考過程，只匯出使用者及助理的文字；每則上限 6000 字元，保留最新 400 回合。
+- `multi-claude add <名稱> --app antigravity` 可新增另一個具獨立登入設定檔的 Antigravity 實例；`launch` 會先匯出再啟動。
+- 方向僅為 Claude → Antigravity。已驗證：一個 156 回合的轉換對話以 agy 命令列接續，模型可依內容作答。本工具未能驗證桌面視窗本身（匯出後請重啟一次應用程式）。
 
 ## 磁碟用量
 

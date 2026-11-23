@@ -76,9 +76,14 @@ Expect a notice such as "Claude can't use thinking from another organization" af
 
 ## Antigravity (experimental)
 
-`multi-claude add <name> --app antigravity` adds a second Google Antigravity instance with its own sign-in profile (`--user-data-dir`), a launcher and a desktop shortcut that uses Antigravity's own icon. Start it with `multi-claude launch <name>`.
+Antigravity keeps one SQLite file per conversation (protobuf step records) in `~/.gemini/antigravity` (desktop app) and `~/.gemini/antigravity-cli` (agy CLI), plus an index row and a small project file under `~/.gemini/config/projects`. Conversations are per machine, not per account.
 
-Nothing is mirrored for Antigravity: it stores conversations in one fixed folder, `~/.gemini/antigravity`, regardless of the profile, so every instance already sees the same conversations. Only the sign-in is per profile. Status: the launch command, profile separation and process detection are tested; whether a second instance shares conversations in practice has not been verified on a real conversation yet.
+`multi-claude agy-export [--since <days>] [--dry-run]` converts Claude Code sessions (the text turns of `~/.claude/projects/*/<id>.jsonl`, from every runtime) into Antigravity conversations in both stores, with a project per working folder. It clones a conversation Antigravity wrote itself, so only content changes. It needs Node 22.5+ (`node:sqlite`).
+
+- Re-running is cheap: unchanged sessions are skipped. A conversation you continued inside Antigravity (more steps than were exported) is never overwritten.
+- Tool calls, tool output and thinking are not exported, only the user/assistant text, each message capped at 6000 characters and the newest 400 turns kept.
+- `multi-claude add <name> --app antigravity` adds another Antigravity instance with its own sign-in profile; `launch` exports first, then starts it.
+- Direction is Claude -> Antigravity only. Verified: a converted 156-turn session was resumed with the agy CLI and the model answered from its content. Not verified from this tool: the desktop window itself (restart the app once after exporting).
 
 ## Disk usage
 

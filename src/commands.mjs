@@ -108,10 +108,11 @@ export function ensureWatcher(cfg) {
   return true;
 }
 
-export function cmdLaunch(args) {
+export async function cmdLaunch(args) {
   const cfg = loadConfig(); need(cfg);
   const rt = runtimeByName(cfg, args._[0]);
   if (!isClaude(rt)) {
+    try { await agyExport(cfg, { log: () => {} }); } catch { /* export is best effort; a missing/old Node must not block the app */ }
     if (antigravityRunning(rt.userData)) { console.log(`${rt.name} is already running.`); return; }
     startApp(rt); console.log(`Started ${rt.name} (Antigravity).`); return;
   }
@@ -137,6 +138,34 @@ export function cmdLogin(args) {
   cmdLaunch({ _: [rt.name] });
   console.log(`Sign in inside the "${rt.name}" window now. The helper runs for ${minutes} minutes and forwards the sign-in link from the browser to it.`);
   console.log(`After the first sign-in: open the Code tab once, then close and reopen "${rt.name}" so it picks up the mirrored session list.`);
+}
+
+/** Claude Code sessions -> Antigravity conversations (agy CLI store + desktop app store). Needs Node 22.5+ (node:sqlite). */
+export async function agyExport(cfg, { since = 0, dryRun = false, log = console.log } = {}) {
+  const { exportSessions, defaultStores } = await import('./antigravity.mjs');
+  const stateFile = join(cfg.home, 'agy-export.json');
+  let state = {}; try { state = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
+  const sessions = []; const seen = new Set();
+  for (const side of discoverSides(cfg)) {
+    for (const f of readdirSync(side.dir).filter(x => /^local_.*\.json$/.test(x))) {
+      try {
+        const j = JSON.parse(readFileSync(join(side.dir, f), 'utf8'));
+        if (!j.cliSessionId || seen.has(j.cliSessionId) || j.isArchived) continue;
+        if (since && Date.now() - (j.lastActivityAt || 0) > since * 86400000) continue;
+        seen.add(j.cliSessionId); sessions.push({ cliSessionId: j.cliSessionId, cwd: j.cwd || j.originCwd, title: j.title });
+      } catch { /* unreadable index file */ }
+    }
+  }
+  const r = exportSessions({ stores: defaultStores(), sessions, state, log, dryRun });
+  if (!dryRun) { mkdirSync(cfg.home, { recursive: true }); writeFileSync(stateFile, JSON.stringify(state, null, 1)); }
+  return r;
+}
+
+export async function cmdAgyExport(args) {
+  const cfg = loadConfig(); need(cfg);
+  const r = await agyExport(cfg, { since: Number(args.since || 0), dryRun: !!args['dry-run'] });
+  console.log(`Antigravity export: ${r.exported} written, ${r.skipped} unchanged, ${r.missing} without transcript, ${r.keptAntigravityEdits} kept (continued in Antigravity).`);
+  console.log('Restart the Antigravity desktop app once so it re-reads its conversation list.');
 }
 
 export function cmdSync(args) {
