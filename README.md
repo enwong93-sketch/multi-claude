@@ -81,9 +81,9 @@ Antigravity keeps one SQLite file per conversation (protobuf step records) in `~
 `multi-claude agy-export [--since <days>] [--dry-run]` converts Claude Code sessions (the text turns of `~/.claude/projects/*/<id>.jsonl`, from every runtime) into Antigravity conversations in the desktop app's store, as desktop-native conversations without a project (no empty project folders are created). It clones a native conversation, so only content changes. Side chats (`/btw`) and archived sessions are skipped. `--cli` also writes the agy CLI store under different ids. Close the Antigravity desktop app before exporting; it rebuilds its list from the files on the next start. It needs Node 22.5+ (`node:sqlite`).
 
 - Re-running is cheap: unchanged sessions are skipped. A conversation you continued inside Antigravity (more steps than were exported) is never overwritten.
-- Tool calls, tool output and thinking are not exported, only the user/assistant text, each message capped at 6000 characters and the newest 400 turns kept.
-- `multi-claude add <name> --app antigravity` adds another Antigravity instance with its own sign-in profile; `launch` exports first, then starts it.
-- Direction is Claude -> Antigravity only. Verified: a converted 156-turn session was resumed with the agy CLI and the model answered from its content. Not verified from this tool: the desktop window itself (restart the app once after exporting).
+- Imports keep a bounded window of recent user and assistant text. The full Claude transcript remains in Claude. After a Claude rewind, the exporter joins the parent and child at the recorded message ID when both transcripts contain it.
+- `multi-claude add <name> --app antigravity` adds another Antigravity instance with its own sign-in profile. Run `agy-export` explicitly for a bulk import.
+- For first-time setup, finish a short conversation in Antigravity and exit the app. Run `multi-claude agy-export` to import and pair the Claude conversations, then run `multi-claude agy-live --watch` and reopen Antigravity. Completed Antigravity text is appended to the JSONL shared by all Claude profiles while Claude Desktop is open. New Claude text is appended after Antigravity fully exits and is available on its next launch.
 
 ## Disk usage
 

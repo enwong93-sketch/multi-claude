@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { decode, encode, find, setText } from '../src/pb.mjs';
-import { claudeTurns, stableUuid, exportSessions } from '../src/antigravity.mjs';
+import { appendNativeTurns, buildConversation, claudeTurns, exportSessions, loadTemplate, projectNativeText, readNativeText, stableUuid, upsertSummary } from '../src/antigravity.mjs';
+import { continuationPrefix, continuationStateFile, initializeContinuations, syncContinuations } from '../src/antigravity-continuations.mjs';
+import { claudeForwardCursor, syncColdForward } from '../src/antigravity-cold-forward.mjs';
 
 const varint = n => { const o = []; do { let c = n & 127; n = Math.floor(n / 128); if (n) c |= 128; o.push(c); } while (n); return Buffer.from(o); };
 const v = (f, n) => Buffer.concat([varint(f << 3), varint(n)]);
@@ -31,6 +33,7 @@ test('claudeTurns keeps real text, drops reminders/tools/meta and merges same-ro
     L({ type: 'user', timestamp: '2026-11-01T00:00:03Z', message: { content: 'next' } }),
   ];
   assert.deepEqual(claudeTurns(lines).map(x => [x.role, x.text]), [['user', 'hello'], ['assistant', 'part one\n\npart two'], ['user', 'next']]);
+  assert.equal(claudeTurns(lines)[1].ts, Date.parse('2026-11-01T00:00:02Z'));
 });
 
 test('claudeTurns drops task notifications and the attach marker', () => {
@@ -74,6 +77,217 @@ function fakeStore() {
   sum.close();
   return store;
 }
+
+test('live native update keeps existing steps and rejects a different history', t => {
+  const store = fakeStore();
+  t.after(() => rmSync(store, { recursive: true, force: true }));
+  const tpl = loadTemplate(store);
+  const convId = stableUuid('test-live');
+  const file = join(store, 'conversations', convId + '.db');
+  const ts = Date.parse('2026-11-02T00:00:00Z');
+  const original = [{ role: 'user', text: 'Question', ts }, { role: 'assistant', text: 'Part one', ts: ts + 1000 }];
+  const next = [original[0], { ...original[1], text: 'Part one\n\nPart two', ts: ts + 2000 },
+    { role: 'user', text: 'Followup', ts: ts + 3000 }];
+  buildConversation({ tpl, convId, turns: original, title: 'Test', projectId: 'outside-of-project', outFile: file });
+  const rows = () => {
+    const d = new DatabaseSync(file, { readOnly: true });
+    try { return d.prepare('select step_payload from steps order by idx').all().map(row => Buffer.from(row.step_payload)); }
+    finally { d.close(); }
+  };
+  const before = rows();
+  assert.deepEqual(readNativeText(file).map(({ role, text, ts, completed }) => ({ role, text, ts, completed })),
+    original.map(turn => ({ ...turn, completed: true })));
+  assert.equal(appendNativeTurns(file, convId, tpl, { turns: 2 }, next), true);
+  const after = rows();
+  assert.equal(after.length, 3);
+  assert.deepEqual(after[0], before[0]);
+  assert.equal(find(decode(after[1]), [20, 1]).v.toString(), next[1].text);
+  assert.equal(find(decode(after[2]), [19, 2]).v.toString(), next[2].text);
+  assert.equal(appendNativeTurns(file, convId, tpl, { turns: 2 }, next), false);
+  assert.throws(() => appendNativeTurns(file, convId, tpl, { turns: 3 }, [
+    { ...original[0], text: 'Different question' }, ...next.slice(1),
+  ]), /diverged/);
+  assert.deepEqual(rows(), after);
+});
+
+test('first desktop import establishes the shared transcript mapping', t => {
+  const store = fakeStore();
+  const home = mkdtempSync(join(tmpdir(), 'mc-setup-'));
+  t.after(() => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  });
+  const env = { USERPROFILE: home };
+  const cliSessionId = stableUuid('setup-session');
+  const project = join(home, '.claude', 'projects', 'fixture');
+  mkdirSync(project, { recursive: true });
+  const transcript = join(project, cliSessionId + '.jsonl');
+  writeFileSync(transcript, [{ type: 'user', message: { content: 'question' } },
+    { type: 'assistant', message: { content: 'answer' } }].map(row => JSON.stringify(row) + '\n').join(''));
+  const state = {};
+  exportSessions({ stores: [store], sessions: [{ cliSessionId }], state, env });
+  assert.equal(state[cliSessionId].size, statSync(transcript).size);
+  writeFileSync(join(home, 'agy-export.json'), JSON.stringify(state));
+  initializeContinuations({ home }, store, env);
+  const mapping = continuationStateFile(home);
+  const written = readFileSync(mapping, 'utf8');
+  const imported = JSON.parse(written).conversations[stableUuid('conv/' + cliSessionId)];
+  assert.equal(imported.claudeId, cliSessionId);
+  assert.equal(imported.count, 2);
+  assert.equal(imported.forward.size, statSync(transcript).size);
+  initializeContinuations({ home }, store, env);
+  assert.equal(readFileSync(mapping, 'utf8'), written);
+});
+
+test('Shared JSONL continuation appends the new completed turn without replaying the shortened history', { skip: process.platform !== 'win32' }, t => {
+  const home = mkdtempSync(join(tmpdir(), 'mc-continuation-'));
+  const store = fakeStore();
+  t.after(() => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  });
+  const cfg = { home, primary: { name: 'A', userData: home }, runtimes: [] };
+  const env = { USERPROFILE: home };
+  const cliSessionId = stableUuid('continuation-claude');
+  const convId = stableUuid('continuation-native');
+  const project = join(home, '.claude', 'projects', 'fixture');
+  const sessions = join(home, 'claude-code-sessions', 'account', 'org');
+  mkdirSync(project, { recursive: true });
+  mkdirSync(sessions, { recursive: true });
+  mkdirSync(join(store, 'annotations'));
+  const transcript = join(project, cliSessionId + '.jsonl');
+  const index = join(sessions, 'local_' + cliSessionId + '.json');
+  const base = stableUuid('continuation-head');
+  const ts = Date.parse('2026-11-02T00:00:00Z');
+  const savedHead = { type: 'assistant', uuid: base, sessionId: cliSessionId, cwd: home, version: '2.1.330',
+    message: { model: 'fixture', role: 'assistant', content: [{ type: 'text', text: 'Unrelated complete Claude history' }] },
+    timestamp: new Date(ts).toISOString() };
+  writeFileSync(transcript, JSON.stringify(savedHead) + '\n');
+  const initialIndex = { cliSessionId, lastAssistantUuid: base, lastActivityAt: ts, completedTurns: 10, title: 'Fixture' };
+  writeFileSync(index, JSON.stringify(initialIndex));
+  writeFileSync(join(store, 'annotations', convId + '.pbtxt'), 'title:"Fixture"');
+  const tpl = loadTemplate(store);
+  const nativeFile = join(store, 'conversations', convId + '.db');
+  const turns = [
+    ['user', 'Already present in short history'], ['assistant', 'Baseline'],
+    ['user', 'Failed Antigravity prompt'], ['assistant', 'Discarded after error'],
+    ['user', 'New Antigravity prompt'], ['assistant', 'New Antigravity reply'],
+  ].map(([role, text], i) => ({ role, text, ts: ts + 1000 * (i + 1) }));
+  const built = buildConversation({ tpl, turns, convId, outFile: nativeFile, title: 'Fixture', projectId: 'outside-of-project' });
+  upsertSummary(store, tpl, convId, built, null, 'outside-of-project', 'Fixture');
+  const native = new DatabaseSync(nativeFile);
+  native.prepare('update steps set idx=idx+10 where idx>=4').run();
+  native.prepare('insert into steps (idx,step_type,status,step_payload) values (4,17,3,?)').run(Buffer.from([8, 17]));
+  native.close();
+  const summaries = new DatabaseSync(join(store, 'conversation_summaries.db'));
+  summaries.prepare('update conversation_summaries set status=?,step_count=7 where conversation_id=?').run('CASCADE_RUN_STATUS_IDLE', convId);
+  summaries.close();
+  const rows = readNativeText(nativeFile, { includeMetadata: true });
+  const checkpoint = { claudeId: cliSessionId, count: 2, prefix: continuationPrefix(rows, 2) };
+  const save = record => writeFileSync(continuationStateFile(home), JSON.stringify({ version: 1, conversations: { [convId]: record } }));
+  save(checkpoint);
+  const log = [];
+  const sync = () => syncContinuations(cfg, store, message => log.push(message), new Map(), env);
+  sync();
+  const written = readFileSync(transcript, 'utf8');
+  const [original, question, answer] = written.trimEnd().split('\n').map(JSON.parse);
+  assert.deepEqual(original, savedHead);
+  assert.equal(question.message.content, 'New Antigravity prompt', log.join('\n'));
+  assert.equal(answer.message.content[0].text, 'New Antigravity reply');
+  assert.equal(question.parentUuid, base);
+  assert.equal(answer.parentUuid, question.uuid);
+  assert.deepEqual(JSON.parse(readFileSync(index, 'utf8')), initialIndex);
+  assert.deepEqual(readNativeText(nativeFile, { includeMetadata: true }), rows);
+  assert.equal(JSON.parse(readFileSync(continuationStateFile(home))).conversations[convId].count, 7);
+  // Recover after a JSONL append succeeded but the checkpoint write did not.
+  save({ ...checkpoint, pending: { count: 7, prefix: continuationPrefix(rows, 7), claudeBase: base } });
+  writeFileSync(index, JSON.stringify(initialIndex));
+  sync();
+  assert.equal(readFileSync(transcript, 'utf8'), written);
+  assert.deepEqual(JSON.parse(readFileSync(index, 'utf8')), initialIndex);
+  save({ ...checkpoint, prefix: 'changed' });
+  sync();
+  assert.match(log.at(-1), /Antigravity history changed/);
+  assert.equal(readFileSync(transcript, 'utf8'), written);
+
+  const clean = { claudeId: cliSessionId, count: 7, prefix: continuationPrefix(rows, 7),
+    forward: claudeForwardCursor(transcript, Buffer.byteLength(written)) };
+  const claudeQuestion = { ...savedHead, type: 'user', uuid: stableUuid('cold-user'), parentUuid: answer.uuid,
+    message: { role: 'user', content: 'Next Claude question' } };
+  const claudeAnswer = { ...savedHead, uuid: stableUuid('cold-answer'), parentUuid: claudeQuestion.uuid,
+    message: { model: 'fixture', role: 'assistant', content: [{ type: 'text', text: 'Next Claude answer' }] } };
+  appendFileSync(transcript, [claudeQuestion, claudeAnswer].map(x => JSON.stringify(x) + '\n').join(''));
+  writeFileSync(index, JSON.stringify({ ...initialIndex, lastAssistantUuid: claudeAnswer.uuid }));
+  const cold = isExited => syncColdForward({
+    store, conversations: { [convId]: clean }, getSessions: () => [{ cliSessionId, indexFile: index, title: 'Fixture' }],
+    save: () => save(clean), fingerprint: continuationPrefix, log: message => log.push(message),
+    notice: (_, error) => log.push(error.message), env, templateStore: store, isExited,
+  });
+  cold(() => false);
+  assert.deepEqual(readNativeText(nativeFile, { includeMetadata: true }), rows);
+  let checks = 0;
+  cold(() => ++checks < 3);
+  assert.deepEqual(readNativeText(nativeFile, { includeMetadata: true }), rows);
+  assert.ok(clean.forwardPending);
+  cold(() => true);
+  const reopened = readNativeText(nativeFile, { includeMetadata: true });
+  assert.deepEqual(reopened.slice(0, rows.length), rows);
+  assert.deepEqual(reopened.slice(rows.length).map(row => row.text), ['Next Claude question', 'Next Claude answer'], log.join('\n'));
+  assert.equal(clean.count, 9);
+  assert.equal(clean.forwardPending, undefined);
+  const indexed = new DatabaseSync(join(store, 'conversation_summaries.db'), { readOnly: true });
+  assert.equal(indexed.prepare('select step_count from conversation_summaries where conversation_id=?').get(convId).step_count, 9);
+  indexed.close();
+  cold(() => true);
+  assert.deepEqual(readNativeText(nativeFile, { includeMetadata: true }), reopened);
+
+  const lateAnswer = { ...claudeAnswer, uuid: stableUuid('cold-late-answer'), parentUuid: claudeAnswer.uuid,
+    message: { ...claudeAnswer.message, content: [{ type: 'text', text: 'Claude finished its previous answer' }] } };
+  appendFileSync(transcript, JSON.stringify(lateAnswer) + '\n');
+  writeFileSync(index, JSON.stringify({ ...initialIndex, lastAssistantUuid: lateAnswer.uuid }));
+  cold(() => true);
+  const updated = readNativeText(nativeFile, { includeMetadata: true });
+  assert.deepEqual(updated.slice(0, reopened.length), reopened);
+  assert.equal(updated.at(-1).text, 'Claude finished its previous answer');
+  assert.equal(clean.count, 10);
+
+  const secondary = join(home, 'secondary');
+  const secondarySessions = join(secondary, 'claude-code-sessions', 'account', 'org');
+  mkdirSync(secondarySessions, { recursive: true });
+  const secondaryIndex = join(secondarySessions, 'local_' + cliSessionId + '.json');
+  writeFileSync(secondaryIndex, readFileSync(index));
+  cfg.runtimes.push({ name: 'B', profile: secondary });
+  const beforeQuota = projectNativeText(updated);
+  assert.equal(appendNativeTurns(nativeFile, convId, tpl, { turns: beforeQuota.length }, [...beforeQuota,
+    { role: 'user', text: 'Resume analysis', ts: ts + 40000 },
+    { role: 'assistant', text: 'Substantial progress before quota stop', ts: ts + 41000 }]), true);
+  const draft = new DatabaseSync(nativeFile);
+  const quotaIdx = draft.prepare('select max(idx)+1 idx from steps').get().idx;
+  draft.prepare('insert into steps (idx,step_type,status,step_payload) values (?,17,3,?)').run(
+    quotaIdx, l(24, l(3, l(2, 'RESOURCE_EXHAUSTED (code 429): quota reached.'))));
+  draft.close();
+  const quotaRows = readNativeText(nativeFile, { includeMetadata: true });
+  const quotaSummary = new DatabaseSync(join(store, 'conversation_summaries.db'));
+  quotaSummary.prepare('update conversation_summaries set step_count=? where conversation_id=?').run(quotaRows.length, convId);
+  quotaSummary.close();
+  sync();
+  const afterQuota = JSON.parse(readFileSync(transcript, 'utf8').trimEnd().split('\n').at(-1));
+  assert.equal(afterQuota.message.content[0].text, 'Substantial progress before quota stop', log.join('\n'));
+  assert.equal(JSON.parse(readFileSync(index, 'utf8')).lastAssistantUuid, lateAnswer.uuid);
+  assert.equal(JSON.parse(readFileSync(secondaryIndex, 'utf8')).lastAssistantUuid, lateAnswer.uuid);
+  assert.equal(JSON.parse(readFileSync(continuationStateFile(home))).conversations[convId].carry, true);
+  const beforeFollowup = projectNativeText(quotaRows);
+  appendNativeTurns(nativeFile, convId, tpl, { turns: beforeFollowup.length }, [...beforeFollowup,
+    { role: 'assistant', text: 'Continued after quota reset', ts: ts + 42000 }]);
+  const followupSummary = new DatabaseSync(join(store, 'conversation_summaries.db'));
+  followupSummary.prepare('update conversation_summaries set step_count=? where conversation_id=?').run(quotaRows.length+1, convId);
+  followupSummary.close();
+  sync();
+  const afterFollowup = JSON.parse(readFileSync(transcript, 'utf8').trimEnd().split('\n').at(-1));
+  assert.equal(afterFollowup.message.content[0].text, 'Continued after quota reset', log.join('\n'));
+  assert.equal(afterFollowup.parentUuid, afterQuota.uuid);
+  assert.equal(JSON.parse(readFileSync(index, 'utf8')).lastAssistantUuid, lateAnswer.uuid);
+});
 
 test('exportSessions writes an indexable conversation and never overwrites one continued in Antigravity', () => {
   const store = fakeStore(); const home = mkdtempSync(join(tmpdir(), 'home-')); const env = { USERPROFILE: home };

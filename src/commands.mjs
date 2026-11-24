@@ -108,11 +108,10 @@ export function ensureWatcher(cfg) {
   return true;
 }
 
-export async function cmdLaunch(args) {
+export function cmdLaunch(args) {
   const cfg = loadConfig(); need(cfg);
   const rt = runtimeByName(cfg, args._[0]);
   if (!isClaude(rt)) {
-    try { await agyExport(cfg, { log: () => {} }); } catch { /* export is best effort; a missing/old Node must not block the app */ }
     if (antigravityRunning(rt.userData)) { console.log(`${rt.name} is already running.`); return; }
     startApp(rt); console.log(`Started ${rt.name} (Antigravity).`); return;
   }
@@ -143,29 +142,62 @@ export function cmdLogin(args) {
 /** Claude Code sessions -> Antigravity conversations (agy CLI store + desktop app store). Needs Node 22.5+ (node:sqlite). */
 export async function agyExport(cfg, { since = 0, dryRun = false, cli = false, log = console.log } = {}) {
   const { exportSessions, defaultStores } = await import('./antigravity.mjs');
+  const { desktopSessions } = await import('./claude-sessions.mjs');
+  const { continuationStateFile, initializeContinuations } = await import('./antigravity-continuations.mjs');
   const stateFile = join(cfg.home, 'agy-export.json');
+  const mappingFile = continuationStateFile(cfg.home);
+  const mapped = new Set(existsSync(mappingFile) ?
+    Object.values(JSON.parse(readFileSync(mappingFile, 'utf8')).conversations).map(entry => entry.claudeId) : []);
   let state = {}; try { state = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
   const sessions = []; const seen = new Set();
-  for (const side of discoverSides(cfg)) {
-    for (const f of readdirSync(side.dir).filter(x => /^local_.*\.json$/.test(x))) {
-      try {
-        const j = JSON.parse(readFileSync(join(side.dir, f), 'utf8'));
-        if (!j.cliSessionId || seen.has(j.cliSessionId) || j.isArchived || j.spawnedFrom?.btw) continue; // btw side chats are not listed in Claude either
-        if (since && Date.now() - (j.lastActivityAt || 0) > since * 86400000) continue;
-        seen.add(j.cliSessionId); sessions.push({ cliSessionId: j.cliSessionId, cwd: j.cwd || j.originCwd, title: j.title });
-      } catch { /* unreadable index file */ }
-    }
+  for (const session of desktopSessions(cfg)) {
+    if (seen.has(session.cliSessionId) || mapped.has(session.cliSessionId) ||
+        session.priorCliSessionIds.some(id => mapped.has(id)) || (since && Date.now() - session.activity > since * 86400000)) continue;
+    seen.add(session.cliSessionId);
+    sessions.push(session);
   }
-  const r = exportSessions({ stores: defaultStores(process.env, { cli }), sessions, state, log, dryRun });
-  if (!dryRun) { mkdirSync(cfg.home, { recursive: true }); writeFileSync(stateFile, JSON.stringify(state, null, 1)); }
+  const stores = defaultStores(process.env, { cli });
+  const r = exportSessions({ stores, sessions, state, log, dryRun, maxHistoryBytes: 220 * 1024, maxMsgChars: 24_000 });
+  if (!dryRun) {
+    mkdirSync(cfg.home, { recursive: true }); writeFileSync(stateFile, JSON.stringify(state, null, 1));
+    const desktop = stores.find(item => item.salt === 'conv/');
+    if (desktop && (r.exported || r.skipped) && !existsSync(mappingFile)) initializeContinuations(cfg, desktop.dir);
+  }
   return r;
 }
 
 export async function cmdAgyExport(args) {
   const cfg = loadConfig(); need(cfg);
   const r = await agyExport(cfg, { since: Number(args.since || 0), dryRun: !!args['dry-run'], cli: !!args.cli });
-  console.log(`Antigravity export: ${r.exported} written, ${r.skipped} unchanged, ${r.missing} without transcript, ${r.keptAntigravityEdits} kept (continued in Antigravity).`);
-  console.log('Restart the Antigravity desktop app once so it re-reads its conversation list.');
+  console.log(`Antigravity export: ${r.exported} ${args['dry-run'] ? 'eligible' : 'written'}, ${r.skipped} unchanged, ${r.missing} without transcript, ${r.keptAntigravityEdits} existing copies kept, ${r.deferredSourceSwitch} source switches deferred.`);
+}
+
+export async function cmdAgyLive(args) {
+  const cfg = loadConfig(); need(cfg);
+  const { geminiDir } = await import('./antigravity.mjs');
+  const { initializeContinuations, syncContinuations } = await import('./antigravity-continuations.mjs');
+  const store = join(geminiDir(), 'antigravity');
+  const notices = new Map();
+  initializeContinuations(cfg, store);
+  if (!args.watch) return syncContinuations(cfg, store, console.log, notices);
+  const log = fileLogger(join(cfg.home, 'agy-live.log'), cfg.logMaxBytes);
+  const parent = process.ppid;
+  let lastError;
+  const tick = async () => {
+    try { process.kill(parent, 0); }
+    catch { log('Antigravity live sync stopped because its launcher exited.'); return; }
+    try {
+      syncContinuations(cfg, store, log, notices);
+      lastError = undefined;
+    }
+    catch (e) {
+      if (lastError !== e.message) log(e.message);
+      lastError = e.message;
+    }
+    setTimeout(tick, lastError ? 20000 : 8000);
+  };
+  log('Conversation sync started. Claude → Antigravity waits for full exit.');
+  await tick();
 }
 
 export function cmdSync(args) {

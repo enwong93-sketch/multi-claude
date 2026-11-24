@@ -36,9 +36,9 @@ Antigravity 每個對話一個 SQLite 檔（protobuf 步驟記錄），存於 `~
 `multi-claude agy-export [--since <天數>] [--dry-run]` 會將 Claude Code 對話（各執行環境 `~/.claude/projects/*/<id>.jsonl` 內的文字回合）轉成 Antigravity 對話，寫入桌面應用的儲存位置，成為與桌面原生對話相同格式、不屬任何專案的對話（不會建立空的專案資料夾）。轉換以原生對話為範本，只替換內容。已封存及 `/btw` 旁枝對話會略過；`--cli` 另可寫入 agy 命令列儲存（使用不同 ID）。匯出前請先關閉 Antigravity 桌面應用，它會在下次啟動時由檔案重建清單。需要 Node 22.5 或以上（`node:sqlite`）。
 
 - 重複執行成本低：未變更的對話會略過。凡在 Antigravity 內繼續過（步驟數多於匯出時）的對話，絕不覆寫。
-- 不匯出工具呼叫、工具輸出與思考過程，只匯出使用者及助理的文字；每則上限 6000 字元，保留最新 400 回合。
-- `multi-claude add <名稱> --app antigravity` 可新增另一個具獨立登入設定檔的 Antigravity 實例；`launch` 會先匯出再啟動。
-- 方向僅為 Claude → Antigravity。已驗證：一個 156 回合的轉換對話以 agy 命令列接續，模型可依內容作答。本工具未能驗證桌面視窗本身（匯出後請重啟一次應用程式）。
+- 匯入保留最近一段使用者和助理文字，完整逐字稿繼續保存在 Claude。Claude 回退後，如父子記錄都含相同的回退訊息 ID，匯出會按該訊息接續歷史。
+- `multi-claude add <名稱> --app antigravity` 可新增具獨立登入設定檔的 Antigravity 實例。批量匯入請手動執行 `agy-export`。
+- 首次設定時，先在 Antigravity 完成一則簡短對話，再完全退出應用程式。執行 `multi-claude agy-export` 匯入及配對 Claude 對話，再執行 `multi-claude agy-live --watch` 並重新開啟 Antigravity。Claude Desktop 開啟期間，Antigravity 已完成的文字會接到各 Claude 設定檔共用的 JSONL。Claude 的新增文字會在 Antigravity 完全退出後追加，下次開啟時可讀取。
 
 ## 磁碟用量
 
