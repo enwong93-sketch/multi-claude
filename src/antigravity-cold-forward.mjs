@@ -106,26 +106,26 @@ function publishSummary(store, id, count, last, lastUser, requireExited) {
 }
 
 export function syncColdForward({ store, conversations, getSessions, save, fingerprint, log, notice, isArchived = () => false,
-  env = process.env, isExited = appExited, templateStore }) {
+  env = process.env, isExited = appExited, templateStore, codexSource }) {
   const requireExited = () => {
     if (!isExited()) throw Error('Waiting for Antigravity to exit completely.');
   };
   const candidates = [];
   for (const [id, record] of Object.entries(conversations)) {
     if (!record.forward || record.pending) continue;
-    const path = findTranscript(record.claudeId, env);
+    const path = record.codex?.path ?? findTranscript(record.claudeId, env);
     if (path && (record.forwardPending || statSync(path).size !== record.forward.size)) {
       candidates.push({ id, record, path });
     }
   }
   if (!candidates.length || !isExited()) return;
-  const sessions = getSessions();
   let tpl;
   for (const { id, record, path } of candidates) {
     try {
-      const session = sessions.find(item => item.cliSessionId === record.claudeId);
+      const through = record.forwardPending?.source.size;
+      const session = record.codex ?? getSessions().find(item => item.cliSessionId === record.claudeId);
       if (!session) throw Error('Claude changed the session mapping.');
-      const { next, turns } = readDelta(path, session, record.forward, id, record.forwardPending?.source.size);
+      const { next, turns } = record.codex ? codexSource(record, id, through) : readDelta(path, session, record.forward, id, through);
       if (!turns.length && !record.forwardPending) {
         record.forward = next;
         save();
@@ -179,7 +179,7 @@ export function syncColdForward({ store, conversations, getSessions, save, finge
       record.forward = next;
       delete record.forwardPending;
       save();
-      log(`Claude → Antigravity synced ${session.title} (${turns.length} messages) while Antigravity was closed.`);
+      log(`${record.codex ? 'Codex' : 'Claude'} → Antigravity synced ${session.title ?? session.threadId} (${turns.length} messages) while Antigravity was closed.`);
     } catch (error) {
       notice(id, error);
     }

@@ -1,6 +1,6 @@
 {
   "name": "multi-claude",
-  "version": "0.2.0",
+  "version": "0.3.0-beta.1",
   "description": "Run several Claude desktop instances (one account each) on Windows and keep their Claude Code session lists and conversation context in sync.",
   "type": "module",
   "bin": { "multi-claude": "bin/multi-claude.mjs" },

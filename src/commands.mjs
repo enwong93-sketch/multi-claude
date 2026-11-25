@@ -175,19 +175,25 @@ export async function cmdAgyExport(args) {
 export async function cmdAgyLive(args) {
   const cfg = loadConfig(); need(cfg);
   const { geminiDir } = await import('./antigravity.mjs');
-  const { initializeContinuations, syncContinuations } = await import('./antigravity-continuations.mjs');
+  const { codexStateFile, continuationStateFile, initializeContinuations, syncContinuations } = await import('./antigravity-continuations.mjs');
   const store = join(geminiDir(), 'antigravity');
   const notices = new Map();
-  initializeContinuations(cfg, store);
-  if (!args.watch) return syncContinuations(cfg, store, console.log, notices);
-  const log = fileLogger(join(cfg.home, 'agy-live.log'), cfg.logMaxBytes);
+  const options = { codex: !!args.codex };
+  if (options.codex && !existsSync(codexStateFile(cfg.home))) throw Error('Pair a Codex rollout with agy-codex-pair first.');
+  if (!options.codex) initializeContinuations(cfg, store);
+  const sync = log => {
+    if (!options.codex || existsSync(continuationStateFile(cfg.home))) syncContinuations(cfg, store, log, notices);
+    if (options.codex) syncContinuations(cfg, store, log, notices, process.env, options);
+  };
+  if (!args.watch) return sync(console.log);
+  const log = fileLogger(join(cfg.home, options.codex ? 'agy-codex-live.log' : 'agy-live.log'), cfg.logMaxBytes);
   const parent = process.ppid;
   let lastError;
   const tick = async () => {
     try { process.kill(parent, 0); }
     catch { log('Antigravity live sync stopped because its launcher exited.'); return; }
     try {
-      syncContinuations(cfg, store, log, notices);
+      sync(log);
       lastError = undefined;
     }
     catch (e) {
@@ -196,8 +202,19 @@ export async function cmdAgyLive(args) {
     }
     setTimeout(tick, lastError ? 20000 : 8000);
   };
-  log('Conversation sync started. Claude → Antigravity waits for full exit.');
+  log(options.codex ? 'Codex ↔ Antigravity sync started. Each write waits for the destination app to exit.' :
+    'Conversation sync started. Claude → Antigravity waits for full exit.');
   await tick();
+}
+
+export async function cmdAgyCodexPair(args) {
+  const [id, rollout] = args._;
+  if (!id || !rollout) throw Error('Usage: multi-claude agy-codex-pair <antigravity-id> <rollout.jsonl>');
+  const cfg = loadConfig(); need(cfg);
+  const { geminiDir } = await import('./antigravity.mjs');
+  const { pairCodexContinuation } = await import('./antigravity-continuations.mjs');
+  const thread = pairCodexContinuation(cfg, join(geminiDir(), 'antigravity'), id, rollout);
+  console.log(`Paired Antigravity ${id} with Codex ${thread}. New completed text will be synced.`);
 }
 
 export function cmdSync(args) {

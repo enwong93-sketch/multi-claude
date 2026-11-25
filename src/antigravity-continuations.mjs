@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { findTranscript, readNativeText, stableUuid } from './antigravity.mjs';
 import { appendLocked, claudeReverseRecords } from './antigravity-reverse.mjs';
 import { desktopSessions } from './claude-sessions.mjs';
 import { claudeForwardCursor, syncColdForward } from './antigravity-cold-forward.mjs';
+import { appendCodexBatch, codexForwardDelta, codexIsClosed, codexRolloutId } from './codex-rollout.mjs';
 
 export const continuationStateFile = home => join(home, 'agy-reverse-live.json');
+export const codexStateFile = home => join(home, 'agy-codex-live.json');
 const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
 export function continuationPrefix(rows, count) {
@@ -51,6 +53,32 @@ export function archivedContinuation(store, id) {
     if (error.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+export function pairCodexContinuation(cfg, store, id, rollout) {
+  if (!uuid.test(id)) throw Error('Specify the existing Antigravity conversation UUID.');
+  const claudeMapping = continuationStateFile(cfg.home);
+  if (existsSync(claudeMapping) && JSON.parse(readFileSync(claudeMapping, 'utf8')).conversations[id]) {
+    throw Error('Choose an Antigravity conversation without an existing Claude mapping.');
+  }
+  if (archivedContinuation(store, id)) throw Error('The Antigravity conversation is archived.');
+  const path = realpathSync(rollout);
+  const threadId = codexRolloutId(path);
+  const forward = claudeForwardCursor(path, statSync(path).size);
+  const rows = readNativeText(join(store, 'conversations', id + '.db'), { includeMetadata: true });
+  if (!rows.length) throw Error('Start the Antigravity conversation before pairing it.');
+  const index = new DatabaseSync(join(store, 'conversation_summaries.db'), { readOnly: true, timeout: 2000 });
+  try {
+    const row = index.prepare('select step_count,status,not_fully_idle from conversation_summaries where conversation_id=?').get(id);
+    if (row?.step_count !== rows.length || row.status !== 'CASCADE_RUN_STATUS_IDLE' || row.not_fully_idle) {
+      throw Error('Wait for the Antigravity conversation to finish before pairing it.');
+    }
+  } finally { index.close(); }
+  const state = { version: 1, conversations: { [id]: {
+    codex: { path, threadId }, forward, count: rows.length, prefix: continuationPrefix(rows, rows.length),
+  } } };
+  writeFileSync(codexStateFile(cfg.home), JSON.stringify(state, null, 2) + '\n', { flag: 'wx', flush: true });
+  return threadId;
 }
 
 function newMessages(rows, from, carry) {
@@ -154,12 +182,20 @@ function finishBatch(session, file, messages, id, batch, previousPrefix, tail) {
 }
 
 /** Each mapped conversation has its own sync position. Native writes wait for full exit. */
-export function syncContinuations(cfg, store, log, notices, env = process.env) {
-  const stateFile = continuationStateFile(cfg.home);
+export function syncContinuations(cfg, store, log, notices, env = process.env,
+  { codex = false, isCodexClosed = codexIsClosed, isAntigravityExited } = {}) {
+  const stateFile = (codex ? codexStateFile : continuationStateFile)(cfg.home);
   const state = JSON.parse(readFileSync(stateFile, 'utf8'));
   if (state.version !== 1 || !state.conversations || !Object.entries(state.conversations).every(([id, record]) =>
-    uuid.test(id) && uuid.test(record.claudeId) && Number.isSafeInteger(record.count) && record.count > 0)) {
+    uuid.test(id) && (codex ? (uuid.test(record.codex?.threadId) && typeof record.codex?.path === 'string') : uuid.test(record.claudeId)) &&
+    Number.isSafeInteger(record.count) && record.count > 0)) {
     throw new Error('Antigravity continuation mapping is invalid.');
+  }
+  if (codex && existsSync(continuationStateFile(cfg.home))) {
+    const existing = JSON.parse(readFileSync(continuationStateFile(cfg.home), 'utf8')).conversations;
+    if (Object.keys(state.conversations).some(id => existing[id])) {
+      throw Error('An Antigravity conversation is mapped to both Claude and Codex.');
+    }
   }
   const db = new DatabaseSync(join(store, 'conversation_summaries.db'), { readOnly: true, timeout: 2000 });
   let sessions;
@@ -191,26 +227,40 @@ export function syncContinuations(cfg, store, log, notices, env = process.env) {
         if (record.pending && (record.pending.count !== count || record.pending.prefix !== prefix)) {
           throw new Error('The pending Antigravity batch changed.');
         }
-        const session = getSessions().find(item => item.cliSessionId === record.claudeId);
-        if (!session) throw new Error('Claude moved or archived the mapped conversation.');
-        const destination = findTranscript(record.claudeId, env);
-        if (!destination) throw new Error('The mapped Claude transcript is missing.');
-        const tail = transcriptTail(destination);
-        if (!record.pending) {
-          if (!matchesClaudeHead(session, tail.head, id, record.prefix)) {
-            throw new Error('Waiting for a complete Claude turn in the shared transcript.');
+        let name;
+        if (codex) {
+          const path = record.codex.path;
+          if (!isCodexClosed()) throw Error('Waiting for Codex to exit before writing the rollout.');
+          if (!record.pending) {
+            codexForwardDelta(record, id);
+            record.pending = { count, prefix, codexBase: claudeForwardCursor(path, statSync(path).size) };
+            save();
           }
-          record.pending = { count, prefix, claudeBase: tail.head.uuid };
-          save();
+          appendCodexBatch(record, messages, id, record.pending, isCodexClosed);
+          name = record.codex.threadId;
+        } else {
+          const session = getSessions().find(item => item.cliSessionId === record.claudeId);
+          if (!session) throw new Error('Claude moved or archived the mapped conversation.');
+          const destination = findTranscript(record.claudeId, env);
+          if (!destination) throw new Error('The mapped Claude transcript is missing.');
+          const tail = transcriptTail(destination);
+          if (!record.pending) {
+            if (!matchesClaudeHead(session, tail.head, id, record.prefix)) {
+              throw new Error('Waiting for a complete Claude turn in the shared transcript.');
+            }
+            record.pending = { count, prefix, claudeBase: tail.head.uuid };
+            save();
+          }
+          finishBatch(session, destination, messages, id, record.pending, record.prefix, tail);
+          name = session.title;
         }
-        finishBatch(session, destination, messages, id, record.pending, record.prefix, tail);
         Object.assign(record, { count, prefix });
         if (nextCarry) record.carry = true;
         else delete record.carry;
         delete record.pending;
         save();
         notices.delete(id);
-        log(`Antigravity → Claude synced ${session.title} (${messages.length} messages).`);
+        log(`Antigravity → ${codex ? 'Codex' : 'Claude'} synced ${name} (${messages.length} messages).`);
       } catch (error) {
         notice(id, error);
       }
@@ -219,5 +269,5 @@ export function syncContinuations(cfg, store, log, notices, env = process.env) {
     db.close();
   }
   syncColdForward({ store, conversations: state.conversations, getSessions, save, fingerprint: continuationPrefix,
-    isArchived: archivedContinuation, log, notice, env });
+    isArchived: archivedContinuation, codexSource: codexForwardDelta, isExited: isAntigravityExited, log, notice, env });
 }

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { decode, encode, find, setText } from '../src/pb.mjs';
 import { appendNativeTurns, buildConversation, claudeTurns, exportSessions, loadTemplate, projectNativeText, readNativeText, stableUuid, upsertSummary } from '../src/antigravity.mjs';
-import { continuationPrefix, continuationStateFile, initializeContinuations, syncContinuations } from '../src/antigravity-continuations.mjs';
+import { codexStateFile, continuationPrefix, continuationStateFile, initializeContinuations, pairCodexContinuation, syncContinuations } from '../src/antigravity-continuations.mjs';
+import { codexDelta, codexRows } from '../src/codex-rollout.mjs';
 import { claudeForwardCursor, syncColdForward } from '../src/antigravity-cold-forward.mjs';
 
 const varint = n => { const o = []; do { let c = n & 127; n = Math.floor(n / 128); if (n) c |= 128; o.push(c); } while (n); return Buffer.from(o); };
@@ -137,6 +138,64 @@ test('first desktop import establishes the shared transcript mapping', t => {
   assert.equal(imported.forward.size, statSync(transcript).size);
   initializeContinuations({ home }, store, env);
   assert.equal(readFileSync(mapping, 'utf8'), written);
+});
+
+test('opt-in Codex pair syncs both ways and skips its own imported items', { skip: process.platform !== 'win32' }, t => {
+  const store = fakeStore();
+  const home = mkdtempSync(join(tmpdir(), 'mc-codex-fixture-'));
+  t.after(() => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  });
+  const config = { home };
+  const id = stableUuid('codex-native');
+  const codexId = stableUuid('codex-fixture');
+  const rollout = join(home, 'rollout-fixture-' + codexId + '.jsonl');
+  const ts = Date.parse('2026-11-03T00:00:00Z');
+  const turn = (role, text, index) => ({ role, text, index, ts: ts + (index + 1) * 1000 });
+  const write = (file, rows) => appendFileSync(file, rows.map(r => JSON.stringify(r) + '\n').join(''));
+  write(rollout, [{ timestamp: new Date(ts).toISOString(), type: 'session_meta', payload: { id: codexId } }]);
+  const cursor = statSync(rollout).size;
+  const tpl = loadTemplate(store);
+  const native = join(store, 'conversations', id + '.db');
+  const start = [turn('user', 'Original Antigravity prompt', 0), turn('assistant', 'Original Antigravity reply', 1)];
+  const built = buildConversation({ tpl, turns: start, convId: id, outFile: native, title: 'Codex fixture', projectId: 'outside-of-project' });
+  upsertSummary(store, tpl, id, built, null, 'outside-of-project', 'Codex fixture');
+  const setSummary = count => {
+    const db = new DatabaseSync(join(store, 'conversation_summaries.db'));
+    db.prepare('update conversation_summaries set step_count=?,status=? where conversation_id=?')
+      .run(count, 'CASCADE_RUN_STATUS_IDLE', id);
+    db.close();
+  };
+  setSummary(2);
+  assert.equal(pairCodexContinuation(config, store, id, rollout), codexId);
+  assert.equal(JSON.parse(readFileSync(codexStateFile(home), 'utf8')).conversations[id].forward.size, cursor);
+  assert.throws(() => pairCodexContinuation(config, store, id, rollout), /EEXIST/);
+  const own = codexRows([turn('user', 'Codex asks', 2), turn('assistant', 'Codex answers', 3)], 'fixture', 'fixture');
+  own.forEach(row => delete row.multiClaude);
+  write(rollout, own.slice(0, -1));
+  assert.throws(() => codexDelta(rollout, cursor, id), /finish the current turn/);
+  write(rollout, own.slice(-1));
+  const log = [];
+  const sync = (isCodexClosed, isAntigravityExited) => syncContinuations(config, store, value => log.push(value),
+    new Map(), { USERPROFILE: home }, { codex: true, isCodexClosed: () => isCodexClosed, isAntigravityExited: () => isAntigravityExited });
+  sync(true, false);
+  assert.equal(readNativeText(native).length, 2);
+  sync(true, true);
+  const imported = projectNativeText(readNativeText(native));
+  assert.deepEqual(imported.slice(2).map(x => x.text), ['Codex asks', 'Codex answers'], log.join('\n'));
+  const fromAgy = [turn('user', 'Antigravity asks', 4), turn('assistant', 'Antigravity answers', 5)];
+  appendNativeTurns(native, id, tpl, { turns: 4 }, [...imported, ...fromAgy]);
+  setSummary(6);
+  const before = readFileSync(rollout, 'utf8');
+  sync(false, true);
+  assert.equal(readFileSync(rollout, 'utf8'), before);
+  sync(true, true);
+  const after = readFileSync(rollout, 'utf8');
+  assert.ok(after.includes('Antigravity answers'), log.join('\n'));
+  assert.equal(readNativeText(native).length, 6);
+  sync(true, true);
+  assert.equal(readFileSync(rollout, 'utf8'), after);
 });
 
 test('Shared JSONL continuation appends the new completed turn without replaying the shortened history', { skip: process.platform !== 'win32' }, t => {

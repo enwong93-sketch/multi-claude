@@ -40,6 +40,17 @@ Antigravity 每個對話一個 SQLite 檔（protobuf 步驟記錄），存於 `~
 - `multi-claude add <名稱> --app antigravity` 可新增具獨立登入設定檔的 Antigravity 實例。批量匯入請手動執行 `agy-export`。
 - 首次設定時，先在 Antigravity 完成一則簡短對話，再完全退出應用程式。執行 `multi-claude agy-export` 匯入及配對 Claude 對話，再執行 `multi-claude agy-live --watch` 並重新開啟 Antigravity。Claude Desktop 開啟期間，Antigravity 已完成的文字會接到各 Claude 設定檔共用的 JSONL。Claude 的新增文字會在 Antigravity 完全退出後追加，下次開啟時可讀取。
 
+### Codex 預覽功能
+
+將一條現有 Antigravity 對話與一份現有 Codex rollout 配對：
+
+```powershell
+multi-claude agy-codex-pair <Antigravity 對話 ID> "<Codex rollout.jsonl 絕對路徑>"
+multi-claude agy-live --codex --watch
+```
+
+請在兩邊回合完成後配對。兩邊的現有歷史會作為同步起點。監看程序只傳送新完成的文字，每次都會等接收端應用程式完全退出，再寫入紀錄。重開接收端可讀到更新。已同步 Claude 的使用者可在現有監看命令加上 `--codex`。省略 `--watch` 會只執行一次。已配對 Claude 的 Antigravity 對話不能同時配對 Codex。
+
 ## 磁碟用量
 
 本工具寫入的任何內容都不會無限成長，所有上限均可在 `multi-claude.json` 中調整。預設值如下：

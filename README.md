@@ -85,6 +85,17 @@ Antigravity keeps one SQLite file per conversation (protobuf step records) in `~
 - `multi-claude add <name> --app antigravity` adds another Antigravity instance with its own sign-in profile. Run `agy-export` explicitly for a bulk import.
 - For first-time setup, finish a short conversation in Antigravity and exit the app. Run `multi-claude agy-export` to import and pair the Claude conversations, then run `multi-claude agy-live --watch` and reopen Antigravity. Completed Antigravity text is appended to the JSONL shared by all Claude profiles while Claude Desktop is open. New Claude text is appended after Antigravity fully exits and is available on its next launch.
 
+### Opt-in Codex preview
+
+Pair one existing Antigravity conversation with one existing Codex rollout:
+
+```powershell
+multi-claude agy-codex-pair <antigravity-id> "<absolute-path-to-codex-rollout.jsonl>"
+multi-claude agy-live --codex --watch
+```
+
+Use completed conversations when pairing. The existing history on both sides is the starting point. The watcher transfers new completed text and waits for the destination app to exit before each write. Reopen the destination to read the update. Add `--codex` to your existing watcher command if you already sync Claude conversations. Run without `--watch` for a single pass. The Codex pair cannot also be a Claude pair.
+
 ## Disk usage
 
 Nothing this tool writes grows without bound. All limits are configurable in `multi-claude.json`; the defaults are:
