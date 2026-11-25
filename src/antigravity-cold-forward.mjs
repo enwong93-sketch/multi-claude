@@ -32,7 +32,7 @@ export function claudeForwardCursor(file, size) {
   } finally { closeSync(fd); }
 }
 
-function appExited() {
+export function appExited() {
   const script = `
     $ErrorActionPreference='Stop'
     $active = Get-CimInstance Win32_Process -Filter "Name='Antigravity.exe' OR Name='language_server.exe'" |
@@ -47,7 +47,7 @@ function appExited() {
   } catch { return false; }
 }
 
-function readDelta(file, session, cursor, id, through) {
+export function readClaudeDelta(file, session, cursor, id, through) {
   const fd = openSync(file, 'r');
   try {
     const stat = fstatSync(fd);
@@ -85,7 +85,7 @@ function readDelta(file, session, cursor, id, through) {
   } finally { closeSync(fd); }
 }
 
-function publishSummary(store, id, count, last, lastUser, requireExited) {
+export function publishSummary(store, id, count, last, lastUser, requireExited) {
   const db = new DatabaseSync(join(store, 'conversation_summaries.db'), { timeout: 3000 });
   try {
     db.exec('begin immediate');
@@ -125,7 +125,7 @@ export function syncColdForward({ store, conversations, getSessions, save, finge
       const through = record.forwardPending?.source.size;
       const session = record.codex ?? getSessions().find(item => item.cliSessionId === record.claudeId);
       if (!session) throw Error('Claude changed the session mapping.');
-      const { next, turns } = record.codex ? codexSource(record, id, through) : readDelta(path, session, record.forward, id, through);
+      const { next, turns } = record.codex ? codexSource(record, id, through) : readClaudeDelta(path, session, record.forward, id, through);
       if (!turns.length && !record.forwardPending) {
         record.forward = next;
         save();

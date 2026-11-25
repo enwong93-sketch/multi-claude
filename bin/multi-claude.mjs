@@ -9,7 +9,8 @@ const HELP = `multi-claude - several Claude desktop runtimes with synced Claude 
   multi-claude launch <name>                                       sync once, start the sync watcher, start the runtime
   multi-claude sync [--once|--watch]                               one sync pass (default) or the background watcher
   multi-claude agy-export [--since <days>] [--dry-run] [--cli]     export native history while Antigravity is closed
-  multi-claude agy-live [--watch] [--codex]                       sync mapped Antigravity conversations
+  multi-claude agy-live [--watch] [--groups]                     sync mapped conversations and optional platform groups
+  multi-claude sync-group <name> [--claude <id>] [--antigravity <id>] [--codex <rollout.jsonl>]
   multi-claude agy-codex-pair <antigravity-id> <rollout.jsonl>      opt in to a Codex and Antigravity pair
   multi-claude shortcuts [name]                                    (re)create desktop shortcuts and icons
   multi-claude list | status | doctor
@@ -27,6 +28,6 @@ function parse(argv) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 const args = parse(rest);
-const table = { init: c.cmdInit, add: c.cmdAdd, remove: c.cmdRemove, list: c.cmdList, launch: c.cmdLaunch, login: c.cmdLogin, sync: c.cmdSync, shortcuts: c.cmdShortcuts, 'agy-export': c.cmdAgyExport, 'agy-live': c.cmdAgyLive, 'agy-codex-pair': c.cmdAgyCodexPair, status: c.cmdStatus, doctor: c.cmdDoctor };
+const table = { init: c.cmdInit, add: c.cmdAdd, remove: c.cmdRemove, list: c.cmdList, launch: c.cmdLaunch, login: c.cmdLogin, sync: c.cmdSync, shortcuts: c.cmdShortcuts, 'agy-export': c.cmdAgyExport, 'agy-live': c.cmdAgyLive, 'agy-codex-pair': c.cmdAgyCodexPair, 'sync-group': c.cmdSyncGroup, status: c.cmdStatus, doctor: c.cmdDoctor };
 if (!cmd || !table[cmd]) { console.log(HELP); process.exit(cmd ? 1 : 0); }
 try { await table[cmd](args); } catch (e) { console.error(`multi-claude: ${e.message}`); process.exit(1); }

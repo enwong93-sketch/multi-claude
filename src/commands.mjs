@@ -176,14 +176,20 @@ export async function cmdAgyLive(args) {
   const cfg = loadConfig(); need(cfg);
   const { geminiDir } = await import('./antigravity.mjs');
   const { codexStateFile, continuationStateFile, initializeContinuations, syncContinuations } = await import('./antigravity-continuations.mjs');
+  const { syncConversationGroups } = await import('./conversation-groups.mjs');
   const store = join(geminiDir(), 'antigravity');
   const notices = new Map();
-  const options = { codex: !!args.codex };
+  const options = { codex: !!args.codex, groups: !!args.groups };
   if (options.codex && !existsSync(codexStateFile(cfg.home))) throw Error('Pair a Codex rollout with agy-codex-pair first.');
-  if (!options.codex) initializeContinuations(cfg, store);
+  if (!options.codex && !options.groups) initializeContinuations(cfg, store);
   const sync = log => {
-    if (!options.codex || existsSync(continuationStateFile(cfg.home))) syncContinuations(cfg, store, log, notices);
+    if ((!options.codex && !options.groups) || existsSync(continuationStateFile(cfg.home))) syncContinuations(cfg, store, log, notices);
     if (options.codex) syncContinuations(cfg, store, log, notices, process.env, options);
+    if (options.groups) syncConversationGroups(cfg, store, log, (name, error) => {
+      if (notices.get(name) === error.message) return;
+      notices.set(name, error.message);
+      log(`Deferred ${name}: ${error.message.split('\n')[0]}`);
+    });
   };
   if (!args.watch) return sync(console.log);
   const log = fileLogger(join(cfg.home, options.codex ? 'agy-codex-live.log' : 'agy-live.log'), cfg.logMaxBytes);
@@ -205,6 +211,15 @@ export async function cmdAgyLive(args) {
   log(options.codex ? 'Codex ↔ Antigravity sync started. Each write waits for the destination app to exit.' :
     'Conversation sync started. Claude → Antigravity waits for full exit.');
   await tick();
+}
+
+export async function cmdSyncGroup(args) {
+  const cfg = loadConfig(); need(cfg);
+  const { geminiDir } = await import('./antigravity.mjs');
+  const { createSyncGroup } = await import('./conversation-groups.mjs');
+  const platforms = createSyncGroup(cfg, join(geminiDir(), 'antigravity'), args._[0],
+    { claude: args.claude, antigravity: args.antigravity, codex: args.codex });
+  console.log(`Group ${args._[0]}: ${platforms.join(', ')}.`);
 }
 
 export async function cmdAgyCodexPair(args) {

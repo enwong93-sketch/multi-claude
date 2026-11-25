@@ -81,7 +81,7 @@ export function pairCodexContinuation(cfg, store, id, rollout) {
   return threadId;
 }
 
-function newMessages(rows, from, carry) {
+export function newMessages(rows, from, carry) {
   const messages = [];
   let user;
   let answer;
@@ -116,7 +116,7 @@ function newMessages(rows, from, carry) {
   return { messages, count, nextCarry };
 }
 
-function saveState(file, state) {
+export function saveState(file, state) {
   const temporary = file + '.' + process.pid + '.tmp';
   try {
     writeFileSync(temporary, JSON.stringify(state, null, 2) + '\n', { flag: 'wx', flush: true });
@@ -126,7 +126,7 @@ function saveState(file, state) {
   }
 }
 
-function transcriptTail(file) {
+export function transcriptTail(file) {
   const fd = openSync(file, 'r');
   try {
     const stat = fstatSync(fd, { bigint: true });
@@ -146,7 +146,7 @@ function transcriptTail(file) {
   }
 }
 
-function matchesClaudeHead(session, head, id, previousPrefix) {
+export function matchesClaudeHead(session, head, id, previousPrefix) {
   const index = JSON.parse(readFileSync(session.indexFile, 'utf8'));
   if (index.cliSessionId !== session.cliSessionId || index.isArchived) throw new Error('Claude moved or archived this conversation.');
   return head?.sessionId === session.cliSessionId && head.type === 'assistant' &&
@@ -154,7 +154,7 @@ function matchesClaudeHead(session, head, id, previousPrefix) {
       (head.multiClaude?.origin === id && head.multiClaude.batch === previousPrefix));
 }
 
-function finishBatch(session, file, messages, id, batch, previousPrefix, tail) {
+export function finishBatch(session, file, messages, id, batch, previousPrefix, tail) {
   const { head, stat, entries } = tail;
   const tag = batch.prefix;
   const applied = entries.filter(row => row.multiClaude?.origin === id && row.multiClaude?.batch === tag);
@@ -171,7 +171,7 @@ function finishBatch(session, file, messages, id, batch, previousPrefix, tail) {
   if (head?.uuid !== batch.claudeBase || !matchesClaudeHead(session, head, id, previousPrefix)) {
     throw new Error('Claude advanced before the pending append. Keeping both histories unchanged.');
   }
-  const records = claudeReverseRecords(head, messages, id);
+  const records = claudeReverseRecords(head, messages, id, tag);
   for (const row of records) row.multiClaude.batch = tag;
   const last = records.at(-1);
   if (Buffer.byteLength(JSON.stringify(records)) > 8 * 1024 * 1024) throw new Error('The pending Claude append is too large.');

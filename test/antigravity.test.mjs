@@ -8,6 +8,7 @@ import { decode, encode, find, setText } from '../src/pb.mjs';
 import { appendNativeTurns, buildConversation, claudeTurns, exportSessions, loadTemplate, projectNativeText, readNativeText, stableUuid, upsertSummary } from '../src/antigravity.mjs';
 import { codexStateFile, continuationPrefix, continuationStateFile, initializeContinuations, pairCodexContinuation, syncContinuations } from '../src/antigravity-continuations.mjs';
 import { codexDelta, codexRows } from '../src/codex-rollout.mjs';
+import { createSyncGroup, syncConversationGroups } from '../src/conversation-groups.mjs';
 import { claudeForwardCursor, syncColdForward } from '../src/antigravity-cold-forward.mjs';
 
 const varint = n => { const o = []; do { let c = n & 127; n = Math.floor(n / 128); if (n) c |= 128; o.push(c); } while (n); return Buffer.from(o); };
@@ -196,6 +197,90 @@ test('opt-in Codex pair syncs both ways and skips its own imported items', { ski
   assert.equal(readNativeText(native).length, 6);
   sync(true, true);
   assert.equal(readFileSync(rollout, 'utf8'), after);
+});
+
+test('platform groups support every pair and adding a third peer without replay or duplicate delivery', { skip: process.platform !== 'win32' }, t => {
+  const store = fakeStore();
+  const root = mkdtempSync(join(tmpdir(), 'mc-platform-groups-'));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  });
+  const ts = Date.parse('2026-11-04T00:00:00Z');
+  const turn = (role, text, index) => ({ role, text, index, ts: ts + (index + 1) * 1000 });
+  const append = (file, rows) => appendFileSync(file, rows.map(row => JSON.stringify(row) + '\n').join(''));
+  for (const [initial, addThird] of [[['claude', 'codex'], true], [['claude', 'codex'], false],
+    [['antigravity', 'codex'], false], [['antigravity', 'claude'], false]]) {
+    const name = initial.join('-') + (addThird ? '-with-third' : '');
+    const home = join(root, name);
+    const project = join(home, '.claude', 'projects', 'fixture');
+    const indexes = join(home, 'claude-code-sessions', 'account', 'org');
+    mkdirSync(project, { recursive: true });
+    mkdirSync(indexes, { recursive: true });
+    const cfg = { home, primary: { name: 'A', userData: home }, runtimes: [] };
+    const env = { USERPROFILE: home };
+    const claude = stableUuid(name + '/claude'), codex = stableUuid(name + '/codex'), agy = stableUuid(name + '/agy');
+    const transcript = join(project, claude + '.jsonl'), index = join(indexes, 'local_' + claude + '.json');
+    const start = { type: 'assistant', uuid: stableUuid(name + '/base'), sessionId: claude,
+      cwd: home, version: '2.1.330', timestamp: new Date(ts).toISOString(),
+      message: { role: 'assistant', model: 'fixture', content: [{ type: 'text', text: 'Claude baseline' }] } };
+    append(transcript, [start]);
+    const updateIndex = answer => writeFileSync(index, JSON.stringify({ cliSessionId: claude, lastAssistantUuid: answer.uuid }));
+    updateIndex(start);
+    const rollout = join(home, 'rollout-fixture-' + codex + '.jsonl');
+    append(rollout, [{ timestamp: new Date(ts).toISOString(), type: 'session_meta', payload: { id: codex } }]);
+    const tpl = loadTemplate(store), native = join(store, 'conversations', agy + '.db');
+    const turns = [turn('user', 'Antigravity baseline', 0), turn('assistant', 'Baseline answer', 1)];
+    const built = buildConversation({ tpl, turns, convId: agy, outFile: native, title: name, projectId: 'outside-of-project' });
+    upsertSummary(store, tpl, agy, built, null, 'outside-of-project', name);
+    const setSummary = count => {
+      const db = new DatabaseSync(join(store, 'conversation_summaries.db'));
+      db.prepare('update conversation_summaries set step_count=?,status=? where conversation_id=?')
+        .run(count, 'CASCADE_RUN_STATUS_IDLE', agy);
+      db.close();
+    };
+    setSummary(2);
+    const selected = { claude, codex: rollout, antigravity: agy };
+    const flags = Object.fromEntries(initial.map(platform => [platform, selected[platform]]));
+    assert.deepEqual(new Set(createSyncGroup(cfg, store, name, flags, env)), new Set(initial));
+    if (addThird) assert.equal(createSyncGroup(cfg, store, name, { antigravity: agy }, env).length, 3);
+    const issues = [], log = [];
+    const sync = (closed = true) => syncConversationGroups(cfg, store, msg => log.push(msg),
+      (where, error) => issues.push(where + ': ' + error.message), env,
+      { isAntigravityExited: () => closed, isCodexClosed: () => closed });
+    const source = initial.includes('codex') ? 'codex' : 'claude';
+    if (source === 'codex') {
+      const nativeCodex = codexRows([turn('user', 'Group asks', 2), turn('assistant', 'Group answers', 3)], 'fixture', 'fixture');
+      nativeCodex.forEach(row => delete row.multiClaude);
+      append(rollout, nativeCodex);
+    } else {
+      const question = { ...start, type: 'user', uuid: stableUuid(name + '/q'), parentUuid: start.uuid,
+        message: { role: 'user', content: 'Group asks' } };
+      const answer = { ...start, uuid: stableUuid(name + '/a'), parentUuid: question.uuid,
+        message: { ...start.message, content: [{ type: 'text', text: 'Group answers' }] } };
+      append(transcript, [question, answer]);
+      updateIndex(answer);
+    }
+    sync(false);
+    assert.equal(readNativeText(native).length, 2);
+    if (source === 'codex' && initial.includes('claude')) assert.ok(readFileSync(transcript, 'utf8').includes('Group answers'), issues.join('\n'));
+    sync(true);
+    const expectsAntigravity = addThird || initial.includes('antigravity');
+    assert.deepEqual(readNativeText(native).slice(2).map(row => row.text),
+      expectsAntigravity ? ['Group asks', 'Group answers'] : [], issues.join('\n'));
+    if (addThird) {
+      const history = projectNativeText(readNativeText(native));
+      appendNativeTurns(native, agy, tpl, { turns: history.length }, [...history,
+        turn('user', 'Third platform asks', 4), turn('assistant', 'Third platform answers', 5)]);
+      setSummary(6);
+      sync(true);
+      assert.ok(readFileSync(transcript, 'utf8').includes('Third platform answers'), issues.join('\n'));
+      assert.ok(readFileSync(rollout, 'utf8').includes('Third platform answers'), issues.join('\n'));
+    }
+    const sizes = [statSync(transcript).size, statSync(rollout).size, readNativeText(native).length];
+    sync();
+    assert.deepEqual([statSync(transcript).size, statSync(rollout).size, readNativeText(native).length], sizes);
+  }
 });
 
 test('Shared JSONL continuation appends the new completed turn without replaying the shortened history', { skip: process.platform !== 'win32' }, t => {

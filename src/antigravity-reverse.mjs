@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { stableUuid } from './antigravity.mjs';
 
-export function claudeReverseRecords(head, messages, origin) {
+export function claudeReverseRecords(head, messages, origin, batch = '') {
   let parent = head.uuid;
   let timestamp = Date.parse(head.timestamp);
   if (head.type !== 'assistant' || !parent || !head.cwd || !head.version || !head.message?.model || !Number.isFinite(timestamp)) {
     throw new Error('Claude history does not end at a compatible assistant record.');
   }
   return messages.map(({ role, text, index, ts }) => {
-    const uuid = stableUuid(`agy-reverse/${head.sessionId}/${origin}/${index}/${text}`);
+    const uuid = stableUuid(`agy-reverse/${head.sessionId}/${origin}/${batch}/${index}/${text}`);
     timestamp = Math.max(timestamp + 1, ts);
     const message = role === 'user' ? { role, content: text } : {
       role, id: `msg_${uuid.replaceAll('-', '')}`, model: head.message.model, type: 'message',
